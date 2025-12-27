@@ -121,3 +121,8 @@ Common errors:
 - `ParseError` → Invalid SQL syntax, check dialect
 - `Cannot find column` → Column not in SELECT list
 - `Ambiguous column` → Provide schema for disambiguation
+
+## Git Guidelines
+- **NEVER** run `git push`. All git operations should remain local.
+- **NEVER** use interactive git commands (e.g., `git add -p`).
+- Always run `git status` before committing.

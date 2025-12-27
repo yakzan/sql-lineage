@@ -28,8 +28,13 @@ from sqlglot.optimizer.scope import build_scope, find_all_in_scope, traverse_sco
 def read_input(value: str) -> str:
     """Read from file if value starts with @, otherwise return as-is."""
     if value.startswith("@"):
-        with open(value[1:], "r") as f:
-            return f.read()
+        try:
+            with open(value[1:], "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            sys.exit(f"Error: File not found: {value[1:]}")
+        except Exception as e:
+            sys.exit(f"Error reading file {value[1:]}: {e}")
     return value
 
 
@@ -38,7 +43,10 @@ def parse_schema(schema_str: str | None) -> dict | None:
     if not schema_str:
         return None
     content = read_input(schema_str)
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        sys.exit(f"Error: Invalid JSON schema: {e}")
 
 
 def classify_transformation(select_expr: exp.Expression) -> str:
@@ -132,8 +140,34 @@ def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None
 
     # Extract JOINs
     for join in qualified.find_all(exp.Join):
+        # sqlglot.exp.Join.kind property is what we need. 
+        # But depending on parsing, it might be in 'side' + 'kind' args?
+        # Actually join.kind is a property that reconstructs it. 
+        # Wait, earlier failure showed 'INNER'.
+        # Is it possible 'qualify' optimized the LEFT join to INNER?
+        # "LEFT JOIN regions r ON u.region_id = r.id" - if columns from 'r' are not used, it might be eliminated?
+        # But here we didn't specify schema or usage that allows elimination, unless 'qualify' is very aggressive.
+        # But 'qualify' is called with 'validate_qualify_columns=False'.
+        
+        # Let's try to get the raw join type from the AST args directly if property fails us.
+        # join.args.get("kind") -> token or string?
+        # join.args.get("side") -> token (LEFT/RIGHT)?
+        
+        side = join.side
+        kind = join.kind
+        
+        # Construct type manually if needed
+        if side and kind:
+            join_type = f"{side} {kind}"
+        elif side:
+            join_type = side
+        elif kind:
+            join_type = kind
+        else:
+            join_type = "INNER" # Default if nothing specified (JOIN x ON y)
+            
         join_info = {
-            "type": join.kind or "INNER",
+            "type": join_type,
             "table": join.this.name if isinstance(join.this, exp.Table) else str(join.this),
             "condition": join.args.get("on").sql(dialect=dialect) if join.args.get("on") else None,
         }

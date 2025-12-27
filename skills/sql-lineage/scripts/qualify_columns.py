@@ -23,8 +23,13 @@ from sqlglot.optimizer.qualify import qualify
 
 def read_input(value: str) -> str:
     if value.startswith("@"):
-        with open(value[1:], "r") as f:
-            return f.read()
+        try:
+            with open(value[1:], "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            sys.exit(f"Error: File not found: {value[1:]}")
+        except Exception as e:
+            sys.exit(f"Error reading file {value[1:]}: {e}")
     return value
 
 
@@ -32,7 +37,10 @@ def parse_schema(schema_str: str | None) -> dict | None:
     if not schema_str:
         return None
     content = read_input(schema_str)
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        sys.exit(f"Error: Invalid JSON schema: {e}")
 
 
 def qualify_query(sql: str, dialect: str | None = None, schema: dict | None = None) -> dict:

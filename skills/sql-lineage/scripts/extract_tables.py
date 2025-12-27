@@ -23,8 +23,13 @@ from sqlglot.errors import SqlglotError
 
 def read_input(value: str) -> str:
     if value.startswith("@"):
-        with open(value[1:], "r") as f:
-            return f.read()
+        try:
+            with open(value[1:], "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            sys.exit(f"Error: File not found: {value[1:]}")
+        except Exception as e:
+            sys.exit(f"Error reading file {value[1:]}: {e}")
     return value
 
 
@@ -44,7 +49,9 @@ def extract_tables(sql: str, dialect: str | None = None) -> list[dict]:
             # Construct fully qualified name
             parts = [p for p in [table.catalog, table.db, table.name] if p]
             table_info["qualified_name"] = ".".join(parts)
-            tables.append(table_info)
+            
+            if table_info not in tables:
+                tables.append(table_info)
 
         return {"success": True, "tables": tables}
 

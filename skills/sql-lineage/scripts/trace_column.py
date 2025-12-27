@@ -28,8 +28,13 @@ from sqlglot.lineage import lineage, Node
 def read_input(value: str) -> str:
     """Read from file if value starts with @, otherwise return as-is."""
     if value.startswith("@"):
-        with open(value[1:], "r") as f:
-            return f.read()
+        try:
+            with open(value[1:], "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            sys.exit(f"Error: File not found: {value[1:]}")
+        except Exception as e:
+            sys.exit(f"Error reading file {value[1:]}: {e}")
     return value
 
 
@@ -38,7 +43,10 @@ def parse_schema(schema_str: str | None) -> dict | None:
     if not schema_str:
         return None
     content = read_input(schema_str)
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        sys.exit(f"Error: Invalid JSON schema: {e}")
 
 
 def node_to_dict(node: Node, depth: int = 0) -> dict[str, Any]:
@@ -82,16 +90,44 @@ def trace_column_lineage(
         )
 
         # Walk the lineage tree and collect all nodes
-        lineage_chain = []
-        for depth, n in enumerate(node.walk()):
-            lineage_chain.append(node_to_dict(n, depth))
+        nodes_list = []
+        edges_list = []
+        node_to_index = {}
+        
+        # Use BFS to collect unique nodes and build edges
+        # First pass: Collect all unique nodes
+        unique_nodes = []
+        visited = set()
+        to_visit = [node]
+        
+        while to_visit:
+            curr = to_visit.pop(0)
+            if id(curr) not in visited:
+                visited.add(id(curr))
+                unique_nodes.append(curr)
+                for child in curr.downstream:
+                    to_visit.append(child)
+        
+        # Assign indices
+        for i, n in enumerate(unique_nodes):
+            node_to_index[id(n)] = i
+            nodes_list.append(node_to_dict(n, 0))
+
+        # Build edges
+        for n in unique_nodes:
+            parent_idx = node_to_index[id(n)]
+            for child in n.downstream:
+                if id(child) in node_to_index:
+                    child_idx = node_to_index[id(child)]
+                    edges_list.append({"from": child_idx, "to": parent_idx})
 
         return {
             "success": True,
             "column": column,
-            "lineage": lineage_chain,
+            "nodes": nodes_list,
+            "edges": edges_list,
             "source_tables": list({
-                n["table"] for n in lineage_chain
+                n["table"] for n in nodes_list
                 if n["type"] == "table"
             }),
         }
@@ -124,12 +160,37 @@ def format_output(result: dict, format_type: str) -> str:
     elif format_type == "tree":
         lines = [f"Column: {result['column']}", ""]
         if result.get("success"):
-            for node in result["lineage"]:
-                indent = "  " * node["depth"]
+            # Reconstruct tree via DFS for display
+            nodes = result["nodes"]
+            edges = result["edges"]
+            
+            # Build adjacency list for children (reverse of edges: parent -> children)
+            children_map = {i: [] for i in range(len(nodes))}
+            for edge in edges:
+                # Edge is from child to parent. We want parent to child for tree view.
+                # edge["from"] is child, edge["to"] is parent
+                children_map[edge["to"]].append(edge["from"])
+            
+            # DFS helper
+            def print_node(node_idx, depth, prefix=""):
+                node = nodes[node_idx]
+                indent = "  " * depth
+                
+                # Format node string
                 if node["type"] == "table":
-                    lines.append(f"{indent}└── {node['table']}.{node['column']} (source table)")
+                    content = f"└── {node['table']}.{node['column']} (source table)"
                 else:
-                    lines.append(f"{indent}└── {node['expression']} ({node['type']})")
+                    content = f"└── {node['expression']} ({node['type']})"
+                
+                lines.append(f"{indent}{content}")
+                
+                for child_idx in children_map.get(node_idx, []):
+                    print_node(child_idx, depth + 1)
+
+            # Start from root (index 0)
+            if nodes:
+                print_node(0, 0)
+                
         else:
             lines.append(f"Error: {result['error']}")
             lines.append(f"Hint: {result.get('hint', '')}")
@@ -150,13 +211,15 @@ def generate_html_visualization(result: dict) -> str:
     nodes_js = []
     edges_js = []
 
-    for i, node in enumerate(result["lineage"]):
-        label = f"{node['table']}.{node['column']}" if node["type"] == "table" else node["expression"]
+    for i, node in enumerate(result["nodes"]):
+        label_text = f"{node['table']}.{node['column']}" if node["type"] == "table" else node["expression"]
+        # Safe JSON serialization for label to prevent XSS and handle special chars
+        label = json.dumps(label_text or "UNKNOWN")
         color = "#97C2FC" if node["type"] == "table" else "#FB7E81"
-        nodes_js.append(f'{{id: {i}, label: "{label}", color: "{color}"}}')
+        nodes_js.append(f'{{id: {i}, label: {label}, color: "{color}"}}')
 
-        if i > 0:
-            edges_js.append(f'{{from: {i}, to: {i-1}}}')
+    for edge in result["edges"]:
+        edges_js.append(f'{{from: {edge["from"]}, to: {edge["to"]}, arrows: "to"}}')
 
     return f"""<!DOCTYPE html>
 <html>
