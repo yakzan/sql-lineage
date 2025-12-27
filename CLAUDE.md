@@ -60,6 +60,11 @@ Run the full test suite:
 uv run pytest tests/ -v
 ```
 
+**Test Guidelines:**
+- **NEVER mock or patch** - tests must call real functions and verify actual behavior
+- Run scripts directly to verify behavior before writing tests
+- Assert on actual output, not assumed/expected output
+
 Manual test examples:
 ```bash
 # Test 1: Basic column tracing

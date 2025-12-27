@@ -28,8 +28,11 @@ def test_join_qualification():
     result = qualify_query(sql, schema=schema)
 
     assert result["success"]
-    # Should qualify ambiguous columns
-    assert "qualified" in result
+    # Verify ambiguous columns are properly qualified with table prefixes
+    assert "users.id" in result["qualified"]
+    assert "orders.amount" in result["qualified"]
+    # Verify join condition is qualified
+    assert "orders.user_id" in result["qualified"]
 
 
 def test_without_schema():

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(uv run:*)",
       "WebFetch(domain:sqlglot.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git show:*)"
     ]
   }
 }
