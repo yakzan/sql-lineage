@@ -1,0 +1,7 @@
+[project]
+name = "sql-lineage"
+version = "1.0.0"
+description = "Deterministic SQL analysis using sqlglot AST parsing"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []

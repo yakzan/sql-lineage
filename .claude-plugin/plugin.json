@@ -1,0 +1,14 @@
+{
+  "name": "sql-lineage",
+  "version": "1.0.0",
+  "description": "Deterministic SQL analysis using sqlglot AST parsing. Trace column lineage, understand query transformations, and debug field origins with certainty.",
+  "author": {
+    "name": "Hay Bin Yakzan"
+  },
+  "homepage": "https://github.com/yakzan/sql-lineage",
+  "keywords": ["sql", "lineage", "ast", "sqlglot", "analysis", "database"],
+  "license": "MIT",
+  "skills": ["skills/sql-lineage"],
+  "agents": ["agents/sql-analyst.md"],
+  "commands": ["commands/trace-field.md", "commands/sql-lineage.md"]
+}
