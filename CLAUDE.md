@@ -55,7 +55,12 @@ Run scripts with `uv run script.py` - dependencies auto-install on first run.
 
 ## Testing
 
-Run all test cases:
+Run the full test suite:
+```bash
+uv run pytest tests/ -v
+```
+
+Manual test examples:
 ```bash
 # Test 1: Basic column tracing
 uv run skills/sql-lineage/scripts/trace_column.py \
@@ -126,3 +131,23 @@ Common errors:
 - **NEVER** run `git push`. All git operations should remain local.
 - **NEVER** use interactive git commands (e.g., `git add -p`).
 - Always run `git status` before committing.
+
+## Documentation Maintenance
+
+Keep documentation in sync with code changes:
+
+| When you change... | Update these files |
+|-------------------|-------------------|
+| Script output format | `skills/sql-lineage/REFERENCE.md` |
+| CLI arguments | `REFERENCE.md`, `README.md` |
+| Skill behavior/usage | `skills/sql-lineage/SKILL.md` |
+| Test coverage | `README.md` (Development section) |
+
+**Before committing:** Run `uv run pytest tests/ -v` to verify all tests pass.
+
+## Project Conventions (Lessons Learned)
+
+- **Plugin folders use hyphens** (`sql-lineage`) per Claude Code spec - they cannot be Python packages
+- **No `__init__.py` in hyphenated folders** - tests use `sys.path.append()` instead
+- **Escape user content in HTML** - use `html.escape()` for HTML, `json.dumps()` for JS context
+- **REFERENCE.md examples must match actual output** - run scripts and copy real output

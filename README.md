@@ -150,6 +150,27 @@ uv run skills/sql-lineage/scripts/trace_column.py \
   "SELECT ..." --column col --format html > lineage.html
 ```
 
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+uv run pytest tests/ -v
+
+# Run specific test file
+uv run pytest tests/test_trace_column.py -v
+```
+
+### Test Coverage
+
+| Test File | Description | Tests |
+|-----------|-------------|-------|
+| `test_trace_column.py` | Column lineage tracing | 10 |
+| `test_analyze_query.py` | Query analysis | 4 |
+| `test_extract_tables.py` | Table extraction | 4 |
+| `test_qualify_columns.py` | Column qualification | 5 |
+
 ## License
 
 MIT

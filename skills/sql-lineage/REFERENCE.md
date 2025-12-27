@@ -37,24 +37,39 @@ The process of adding table prefixes to all column references:
 **Output (JSON):**
 ```json
 {
+  "success": true,
   "column": "user_id",
-  "qualified_name": "t.user_id",
-  "lineage": [
+  "nodes": [
     {
       "depth": 0,
-      "type": "derived",
-      "expression": "id AS user_id",
-      "source_scope": "subquery"
+      "name": "user_id",
+      "expression": "t.user_id AS user_id",
+      "type": "derived"
     },
     {
-      "depth": 1,
+      "depth": 0,
+      "name": "t.user_id",
+      "expression": "orders.id AS user_id",
+      "type": "derived"
+    },
+    {
+      "depth": 0,
+      "name": "orders.id",
+      "expression": "orders AS orders",
       "type": "table",
       "table": "orders",
-      "column": "id"
+      "column": "orders.id"
     }
-  ]
+  ],
+  "edges": [
+    {"from": 1, "to": 0},
+    {"from": 2, "to": 1}
+  ],
+  "source_tables": ["orders"]
 }
 ```
+
+The output is a directed graph where `edges` connect nodes (child → parent).
 
 ### analyze_query.py
 
@@ -63,36 +78,38 @@ The process of adding table prefixes to all column references:
 - `--dialect, -d`: SQL dialect
 - `--schema, -s`: JSON schema
 - `--output, -o`: Output file path
-- `--include-ctes`: Include CTE analysis (default: true)
-- `--format, -f`: Output format: `json`, `markdown`, `html`
+- `--format, -f`: Output format: `json` (default), `markdown`
 
 **Output (JSON):**
 ```json
 {
+  "success": true,
   "query_type": "SELECT",
-  "dialect": "postgres",
-  "tables": ["orders", "users"],
-  "ctes": ["active_users"],
+  "dialect": null,
+  "tables": [
+    {"name": "orders", "alias": "o", "schema": null},
+    {"name": "users", "alias": "u", "schema": null}
+  ],
+  "ctes": [],
   "columns": [
     {
-      "output_name": "user_name",
       "output_position": 1,
+      "output_name": "user_name",
+      "expression": "u.name AS user_name",
       "transformation": "renamed",
-      "sources": [
-        {"table": "users", "column": "name"}
-      ],
-      "expression": "users.name AS user_name"
+      "sources": [{"table": "u", "column": "name"}]
     }
   ],
   "joins": [
     {
       "type": "INNER",
-      "left": "orders",
-      "right": "users",
-      "condition": "orders.user_id = users.id"
+      "table": "users",
+      "condition": "o.user_id = u.id"
     }
   ],
-  "filters": ["orders.status = 'complete'"],
+  "filters": [],
+  "group_by": [],
+  "order_by": [],
   "aggregations": [],
   "window_functions": []
 }

@@ -140,23 +140,10 @@ def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None
 
     # Extract JOINs
     for join in qualified.find_all(exp.Join):
-        # sqlglot.exp.Join.kind property is what we need. 
-        # But depending on parsing, it might be in 'side' + 'kind' args?
-        # Actually join.kind is a property that reconstructs it. 
-        # Wait, earlier failure showed 'INNER'.
-        # Is it possible 'qualify' optimized the LEFT join to INNER?
-        # "LEFT JOIN regions r ON u.region_id = r.id" - if columns from 'r' are not used, it might be eliminated?
-        # But here we didn't specify schema or usage that allows elimination, unless 'qualify' is very aggressive.
-        # But 'qualify' is called with 'validate_qualify_columns=False'.
-        
-        # Let's try to get the raw join type from the AST args directly if property fails us.
-        # join.args.get("kind") -> token or string?
-        # join.args.get("side") -> token (LEFT/RIGHT)?
-        
         side = join.side
         kind = join.kind
-        
-        # Construct type manually if needed
+
+        # Construct join type from side (LEFT/RIGHT) and kind (INNER/OUTER)
         if side and kind:
             join_type = f"{side} {kind}"
         elif side:
@@ -164,7 +151,7 @@ def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None
         elif kind:
             join_type = kind
         else:
-            join_type = "INNER" # Default if nothing specified (JOIN x ON y)
+            join_type = "INNER"
             
         join_info = {
             "type": join_type,

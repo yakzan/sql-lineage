@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import html
 import json
 import sys
 from typing import Any
@@ -221,10 +222,14 @@ def generate_html_visualization(result: dict) -> str:
     for edge in result["edges"]:
         edges_js.append(f'{{from: {edge["from"]}, to: {edge["to"]}, arrows: "to"}}')
 
+    # Escape HTML content to prevent XSS
+    escaped_column = html.escape(result['column'])
+    escaped_tables = html.escape(', '.join(result['source_tables']))
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Column Lineage: {result['column']}</title>
+    <title>Column Lineage: {escaped_column}</title>
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style>
         #graph {{ width: 100%; height: 600px; border: 1px solid #ccc; }}
@@ -232,8 +237,8 @@ def generate_html_visualization(result: dict) -> str:
     </style>
 </head>
 <body>
-    <h1>Lineage for column: {result['column']}</h1>
-    <p>Source tables: {', '.join(result['source_tables'])}</p>
+    <h1>Lineage for column: {escaped_column}</h1>
+    <p>Source tables: {escaped_tables}</p>
     <div id="graph"></div>
     <script>
         var nodes = new vis.DataSet([{', '.join(nodes_js)}]);

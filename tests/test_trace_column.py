@@ -1,4 +1,3 @@
-import json
 import pytest
 import sys
 import os
@@ -83,17 +82,72 @@ def test_union_lineage():
 def test_json_output_safety():
     # Test for XSS-safe label encoding in HTML generation logic (implicitly tested via node content)
     # But explicitly checking if we can handle weird characters
-    # Note: Double quotes in identifiers are dialect specific. 
+    # Note: Double quotes in identifiers are dialect specific.
     # Standard SQL uses double quotes for identifiers.
     sql = 'SELECT "weird""column" FROM t'
     result = trace_column_lineage(sql, 'weird"column')
-    
+
     if not result["success"]:
         # Fallback to a simpler case if dialect issues arise with escaping
         sql = 'SELECT col AS "weird_chars_&<>" FROM t'
         result = trace_column_lineage(sql, 'weird_chars_&<>')
-        
+
     # Success means it parsed and didn't crash
     assert result["success"]
     # Ensure special chars are present in some node name
     assert any('weird' in n["name"] for n in result["nodes"])
+
+
+# Error case tests
+def test_invalid_sql_syntax():
+    sql = "SELEC * FORM users"  # Typos
+    result = trace_column_lineage(sql, "id")
+
+    assert not result["success"]
+    assert "error" in result
+
+
+def test_nonexistent_column():
+    sql = "SELECT id, name FROM users"
+    result = trace_column_lineage(sql, "nonexistent_column")
+
+    assert not result["success"]
+    assert "error" in result
+    assert "hint" in result
+
+
+def test_non_select_statement():
+    # Lineage only works for SELECT statements
+    sql = "INSERT INTO users (id, name) VALUES (1, 'test')"
+    result = trace_column_lineage(sql, "id")
+
+    assert not result["success"]
+    assert "error" in result
+
+
+# Dialect-specific tests
+def test_bigquery_dialect():
+    sql = "SELECT id FROM `project.dataset.users`"
+    result = trace_column_lineage(sql, "id", dialect="bigquery")
+
+    assert result["success"]
+    assert "users" in result["source_tables"]
+
+
+# Nested subquery test for topology verification
+def test_nested_subquery_topology():
+    sql = """
+    SELECT outer_col FROM (
+        SELECT inner_col AS outer_col FROM (
+            SELECT base_col AS inner_col FROM base_table
+        ) inner_sq
+    ) outer_sq
+    """
+    result = trace_column_lineage(sql, "outer_col")
+
+    assert result["success"]
+    assert "base_table" in result["source_tables"]
+
+    # Verify we have proper graph structure (3+ nodes for the chain)
+    assert len(result["nodes"]) >= 3
+    assert len(result["edges"]) >= 2
