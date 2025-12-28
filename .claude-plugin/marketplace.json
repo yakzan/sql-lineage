@@ -10,7 +10,10 @@
   "plugins": [
     {
       "name": "sql-lineage",
-      "source": ".",
+      "source": {
+        "source": "github",
+        "repo": "yakzan/sql-lineage"
+      },      
       "description": "Deterministic SQL analysis using sqlglot AST parsing. Trace column lineage, understand query transformations, and debug field origins with certainty.",
       "version": "1.0.0",
       "author": {
