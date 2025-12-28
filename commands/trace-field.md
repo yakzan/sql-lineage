@@ -27,7 +27,7 @@ When the user runs `/trace-field`, you should:
 Run the following command with the user's input:
 
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "$sql" --column "$column" --format tree
 ```
 

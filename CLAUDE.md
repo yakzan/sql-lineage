@@ -71,27 +71,27 @@ uv run pytest tests/ -v
 Manual test examples:
 ```bash
 # Test 1: Basic column tracing
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT user_id FROM (SELECT id AS user_id FROM users) t" \
   --column user_id
 
 # Test 2: CTE analysis
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "WITH active AS (SELECT id FROM users WHERE active) SELECT id FROM active" \
   --format markdown
 
 # Test 3: Join analysis
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT o.amount FROM orders o JOIN users u ON o.user_id = u.id" \
   --column amount
 
 # Test 4: Table extraction
-uv run skills/sql-lineage/scripts/extract_tables.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/extract_tables.py \
   "SELECT * FROM a JOIN b ON a.id = b.id LEFT JOIN c ON b.id = c.id" \
   --names-only
 
 # Test 5: CTE column tracing (column not in final output)
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "WITH totals AS (SELECT id, amount * 2 AS doubled FROM orders) SELECT id FROM totals" \
   --column doubled --format tree
 ```

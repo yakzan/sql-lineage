@@ -31,25 +31,25 @@ You have access to several sqlglot-powered scripts:
 
 ### Column Lineage Tracing
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SQL_QUERY" --column COLUMN_NAME [--dialect DIALECT] [--schema 'JSON']
 ```
 
 ### Full Query Analysis
 ```bash
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "SQL_QUERY" [--dialect DIALECT] [--format json|markdown]
 ```
 
 ### Table Extraction
 ```bash
-uv run skills/sql-lineage/scripts/extract_tables.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/extract_tables.py \
   "SQL_QUERY" [--names-only]
 ```
 
 ### Column Qualification
 ```bash
-uv run skills/sql-lineage/scripts/qualify_columns.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/qualify_columns.py \
   "SQL_QUERY" --schema 'JSON'
 ```
 
