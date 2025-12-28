@@ -5,12 +5,7 @@
   "author": {
     "name": "Hay Bin Yakzan"
   },
-  "source": {
-    "source": "github",
-    "repo": "yakzan/sql-lineage"
-  },
   "homepage": "https://github.com/yakzan/sql-lineage",
   "keywords": ["sql", "lineage", "ast", "sqlglot", "analysis", "database"],
-  "category": "productivity",
   "license": "MIT"
 }
