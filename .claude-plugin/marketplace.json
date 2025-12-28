@@ -1,0 +1,25 @@
+{
+  "name": "sql-lineage-marketplace",
+  "owner": {
+    "name": "Hay Bin Yakzan"
+  },
+  "metadata": {
+    "description": "SQL analysis plugins for Claude Code",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "sql-lineage",
+      "source": ".",
+      "description": "Deterministic SQL analysis using sqlglot AST parsing. Trace column lineage, understand query transformations, and debug field origins with certainty.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Hay Bin Yakzan"
+      },
+      "homepage": "https://github.com/yakzan/sql-lineage",
+      "license": "MIT",
+      "keywords": ["sql", "lineage", "ast", "sqlglot", "analysis", "database"],
+      "category": "data-engineering"
+    }
+  ]
+}
