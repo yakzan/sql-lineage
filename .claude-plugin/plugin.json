@@ -7,8 +7,5 @@
   },
   "homepage": "https://github.com/yakzan/sql-lineage",
   "keywords": ["sql", "lineage", "ast", "sqlglot", "analysis", "database"],
-  "license": "MIT",
-  "skills": ["skills/sql-lineage"],
-  "agents": ["agents/sql-analyst.md"],
-  "commands": ["commands/trace-field.md", "commands/sql-lineage.md"]
+  "license": "MIT"
 }
