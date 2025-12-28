@@ -31,7 +31,7 @@ When the user runs `/sql-lineage`, analyze the query and provide:
 ## Execution
 
 ```bash
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "$sql" --format markdown ${dialect:+--dialect "$dialect"}
 ```
 

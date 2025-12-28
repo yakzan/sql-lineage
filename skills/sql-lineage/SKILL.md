@@ -28,7 +28,7 @@ column origins and transformations.
 
 ### Trace a specific column's lineage
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT user_id, total FROM (SELECT id as user_id, amount as total FROM orders) t" \
   --column user_id
 ```
@@ -36,19 +36,19 @@ uv run skills/sql-lineage/scripts/trace_column.py \
 ### Trace a column in a CTE (new!)
 ```bash
 # Even if total_amount is only in a CTE (not final output), this works:
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   @query.sql --column total_amount --format tree
 ```
 
 ### Analyze all columns in a query
 ```bash
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "SELECT a.id, b.name FROM users a JOIN profiles b ON a.id = b.user_id"
 ```
 
 ### With schema for disambiguation
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT * FROM x JOIN y ON x.id = y.id" \
   --column name \
   --schema '{"x": {"id": "INT", "name": "VARCHAR"}, "y": {"id": "INT", "email": "VARCHAR"}}'
@@ -56,7 +56,7 @@ uv run skills/sql-lineage/scripts/trace_column.py \
 
 ### Specify SQL dialect (if not Redshift)
 ```bash
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "SELECT PARSE_DATE('%Y%m%d', date_str) FROM events" \
   --dialect bigquery
 ```
@@ -153,15 +153,15 @@ When a column is defined in a CTE that references another CTE, you can trace the
 
 ```bash
 # Step 1: Find where `final_metric` is defined
-uv run skills/sql-lineage/scripts/trace_column.py @query.sql --column final_metric
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py @query.sql --column final_metric
 # Returns: found_in cte3, sources: ["cte2.intermediate"], available_ctes: ["cte1", "cte2", "cte3"]
 
 # Step 2: "cte2" is in available_ctes, so trace the source column
-uv run skills/sql-lineage/scripts/trace_column.py @query.sql --column intermediate
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py @query.sql --column intermediate
 # Returns: found_in cte2, sources: ["cte1.base_value"], available_ctes: [...]
 
 # Step 3: Continue until sources point to actual tables (not CTEs)
-uv run skills/sql-lineage/scripts/trace_column.py @query.sql --column base_value
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py @query.sql --column base_value
 # Returns: found_in cte1, sources: ["orders.amount"] - done! orders is a table
 ```
 

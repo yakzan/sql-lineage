@@ -15,12 +15,12 @@ Requires [uv](https://docs.astral.sh/uv/) (Python package manager).
 
 ```bash
 # Trace where a column comes from
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT user_id FROM (SELECT id AS user_id FROM users) t" \
   --column user_id
 
 # Analyze full query structure
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "SELECT a.id, b.name FROM users a JOIN profiles b ON a.id = b.user_id" \
   --format markdown
 ```
@@ -31,7 +31,7 @@ uv run skills/sql-lineage/scripts/analyze_query.py \
 Trace a column's lineage back to source tables.
 
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py "SQL" --column COLUMN [OPTIONS]
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py "SQL" --column COLUMN [OPTIONS]
 
 Options:
   -c, --column    Column name to trace (required)
@@ -44,7 +44,7 @@ Options:
 Extract all columns, tables, joins, and transformations.
 
 ```bash
-uv run skills/sql-lineage/scripts/analyze_query.py "SQL" [OPTIONS]
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py "SQL" [OPTIONS]
 
 Options:
   -d, --dialect   SQL dialect
@@ -57,7 +57,7 @@ Options:
 List all tables referenced in a query.
 
 ```bash
-uv run skills/sql-lineage/scripts/extract_tables.py "SQL" [OPTIONS]
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/extract_tables.py "SQL" [OPTIONS]
 
 Options:
   -d, --dialect   SQL dialect
@@ -68,7 +68,7 @@ Options:
 Add table prefixes to all column references.
 
 ```bash
-uv run skills/sql-lineage/scripts/qualify_columns.py "SQL" [OPTIONS]
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/qualify_columns.py "SQL" [OPTIONS]
 
 Options:
   -d, --dialect   SQL dialect
@@ -99,7 +99,7 @@ Options:
 For queries with `SELECT *` or ambiguous columns, provide schema as JSON:
 
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT * FROM users JOIN orders ON users.id = orders.user_id" \
   --column email \
   --schema '{"users": {"id": "INT", "email": "VARCHAR"}, "orders": {"id": "INT", "user_id": "INT"}}'
@@ -130,7 +130,7 @@ Once installed, use slash commands:
 
 ### Trace through CTEs
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "WITH step1 AS (SELECT id, amount FROM orders),
         step2 AS (SELECT id, amount * 1.1 AS adjusted FROM step1)
    SELECT adjusted FROM step2" \
@@ -139,14 +139,14 @@ uv run skills/sql-lineage/scripts/trace_column.py \
 
 ### BigQuery-specific syntax
 ```bash
-uv run skills/sql-lineage/scripts/analyze_query.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py \
   "SELECT PARSE_DATE('%Y%m%d', date_str) AS parsed FROM events" \
   --dialect bigquery
 ```
 
 ### HTML visualization
 ```bash
-uv run skills/sql-lineage/scripts/trace_column.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT ..." --column col --format html > lineage.html
 ```
 
