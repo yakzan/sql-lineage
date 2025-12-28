@@ -47,6 +47,9 @@ Run scripts with `uv run script.py` - dependencies auto-install on first run.
 - Schema as JSON string: `--schema '{"table": {"col": "TYPE"}}'`
 - Schema from file: `--schema @schema.json`
 
+### Default Dialect
+Default dialect is **Redshift**. Override with `--dialect <name>` for other databases.
+
 ### Output Formats
 - `--format json` - Structured data (default)
 - `--format tree` - Human-readable hierarchy (trace_column.py)
@@ -86,6 +89,11 @@ uv run skills/sql-lineage/scripts/trace_column.py \
 uv run skills/sql-lineage/scripts/extract_tables.py \
   "SELECT * FROM a JOIN b ON a.id = b.id LEFT JOIN c ON b.id = c.id" \
   --names-only
+
+# Test 5: CTE column tracing (column not in final output)
+uv run skills/sql-lineage/scripts/trace_column.py \
+  "WITH totals AS (SELECT id, amount * 2 AS doubled FROM orders) SELECT id FROM totals" \
+  --column doubled --format tree
 ```
 
 ## Common Modifications
@@ -129,8 +137,10 @@ for table in ast.find_all(exp.Table):
 
 Common errors:
 - `ParseError` → Invalid SQL syntax, check dialect
-- `Cannot find column` → Column not in SELECT list
+- Column not in SELECT → Now searches CTEs automatically and returns location
 - `Ambiguous column` → Provide schema for disambiguation
+
+**CTE-aware behavior:** If a column isn't in the final SELECT but exists in a CTE, the tool returns success with the CTE location, expression, and source columns instead of failing.
 
 ## Git Guidelines
 - **NEVER** run `git push`. All git operations should remain local.
