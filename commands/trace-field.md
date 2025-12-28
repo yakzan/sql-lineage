@@ -27,25 +27,47 @@ When the user runs `/trace-field`, you should:
 Run the following command with the user's input:
 
 ```bash
-uv run ~/.claude/plugins/sql-lineage/skills/sql-lineage/scripts/trace_column.py \
+uv run skills/sql-lineage/scripts/trace_column.py \
   "$sql" --column "$column" --format tree
 ```
 
+Note: Default dialect is Redshift. Override with `--dialect <name>` if needed.
+
 ## Response Format
 
-Present the lineage as:
+The script will return one of three results:
 
-**Column `{column}` traces back to:**
-
+### 1. Column in final output
+Full lineage tree from output to source tables:
 ```
-output_column
-└── intermediate_expression (if any)
-    └── source_table.source_column
+Column: {column}
+
+└── output_column (derived)
+    └── intermediate_expression (derived)
+        └── source_table.source_column (source table)
 ```
 
-If multiple source columns contribute, show each branch.
+### 2. Column in CTE(s)
+When the column is defined in a CTE but not in final output:
+```
+Column: {column}
 
-If the trace fails, explain why and suggest:
-- Providing a dialect with `--dialect`
-- Providing schema with `--schema`
-- Checking column name spelling
+Note: Column not in final SELECT, found in CTE(s):
+
+CTE: cte_name
+  Expression: the_column_expression
+  Sources: table.col1, table.col2
+```
+
+### 3. Column not found
+Error with helpful context:
+```
+Column: {column}
+
+Error: Column 'column' not found in query
+Available columns: col1, col2, col3
+Available CTEs: cte1, cte2
+Hint: Check spelling...
+```
+
+Present the lineage information clearly. If the column is in a CTE, explain that it's an intermediate calculation used by other parts of the query.

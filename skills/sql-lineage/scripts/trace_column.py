@@ -70,6 +70,32 @@ def node_to_dict(node: Node, depth: int = 0) -> dict[str, Any]:
     return result
 
 
+def extract_source_columns(expr: exp.Expression) -> list[str]:
+    """Extract source column references from an expression (deduplicated)."""
+    sources = set()
+    for col in expr.find_all(exp.Column):
+        table = col.table or "unknown"
+        sources.add(f"{table}.{col.name}")
+    return list(sources)
+
+
+def find_column_in_ctes(ast: exp.Expression, column: str) -> list[dict]:
+    """Find all CTEs where a column is defined."""
+    locations = []
+    for cte in ast.find_all(exp.CTE):
+        cte_name = cte.alias
+        if hasattr(cte.this, 'selects'):
+            for sel in cte.this.selects:
+                if sel.alias_or_name.lower() == column.lower():
+                    locations.append({
+                        "location": "cte",
+                        "cte_name": cte_name,
+                        "expression": sel.sql(),
+                        "sources": extract_source_columns(sel),
+                    })
+    return locations
+
+
 def trace_column_lineage(
     sql: str,
     column: str,
@@ -80,77 +106,123 @@ def trace_column_lineage(
     Trace a column's complete lineage through the query.
 
     Returns a dictionary with the column info and its full lineage chain.
+    Now searches CTEs if column not in final output.
     """
+    # Default to redshift dialect
+    dialect = dialect or "redshift"
+
+    # First, parse the AST to check column locations
     try:
-        # Get the lineage node for the column
-        node = lineage(
-            column,
-            sql,
-            dialect=dialect,
-            schema=schema or {},
-        )
-
-        # Walk the lineage tree and collect all nodes
-        nodes_list = []
-        edges_list = []
-        node_to_index = {}
-        
-        # Use BFS to collect unique nodes and build edges
-        # First pass: Collect all unique nodes
-        unique_nodes = []
-        visited = set()
-        to_visit = [node]
-        
-        while to_visit:
-            curr = to_visit.pop(0)
-            if id(curr) not in visited:
-                visited.add(id(curr))
-                unique_nodes.append(curr)
-                for child in curr.downstream:
-                    to_visit.append(child)
-        
-        # Assign indices
-        for i, n in enumerate(unique_nodes):
-            node_to_index[id(n)] = i
-            nodes_list.append(node_to_dict(n, 0))
-
-        # Build edges
-        for n in unique_nodes:
-            parent_idx = node_to_index[id(n)]
-            for child in n.downstream:
-                if id(child) in node_to_index:
-                    child_idx = node_to_index[id(child)]
-                    edges_list.append({"from": child_idx, "to": parent_idx})
-
-        return {
-            "success": True,
-            "column": column,
-            "nodes": nodes_list,
-            "edges": edges_list,
-            "source_tables": list({
-                n["table"] for n in nodes_list
-                if n["type"] == "table"
-            }),
-        }
-
+        ast = sqlglot.parse_one(sql, dialect=dialect)
     except SqlglotError as e:
         return {
             "success": False,
             "column": column,
-            "error": str(e),
-            "hint": get_error_hint(str(e)),
+            "error": f"Parse error: {e}",
+            "hint": "Check SQL syntax or try a different dialect",
         }
 
+    # Check if column is in final SELECT
+    in_final = False
+    if hasattr(ast, 'selects'):
+        in_final = any(s.alias_or_name.lower() == column.lower() for s in ast.selects)
 
-def get_error_hint(error: str) -> str:
-    """Provide helpful hints for common errors."""
-    if "Cannot find column" in error:
-        return "Check that the column name matches exactly (case-sensitive) and is in the SELECT list."
-    if "Cannot build lineage" in error:
-        return "Ensure the SQL is a SELECT statement. CREATE/INSERT not supported for lineage."
-    if "schema" in error.lower():
-        return "Try providing a schema with --schema for queries with SELECT * or ambiguous columns."
-    return "Check SQL syntax and dialect setting."
+    if in_final:
+        # Use existing lineage() function for final output columns
+        try:
+            node = lineage(
+                column,
+                ast,  # Pass pre-parsed AST to avoid reparsing
+                dialect=dialect,
+                schema=schema or {},
+            )
+
+            # Walk the lineage tree and collect all nodes
+            nodes_list = []
+            edges_list = []
+            node_to_index = {}
+
+            # Use BFS to collect unique nodes and build edges
+            unique_nodes = []
+            visited = set()
+            to_visit = [node]
+
+            while to_visit:
+                curr = to_visit.pop(0)
+                if id(curr) not in visited:
+                    visited.add(id(curr))
+                    unique_nodes.append(curr)
+                    for child in curr.downstream:
+                        to_visit.append(child)
+
+            # Assign indices
+            for i, n in enumerate(unique_nodes):
+                node_to_index[id(n)] = i
+                nodes_list.append(node_to_dict(n, 0))
+
+            # Build edges
+            for n in unique_nodes:
+                parent_idx = node_to_index[id(n)]
+                for child in n.downstream:
+                    if id(child) in node_to_index:
+                        child_idx = node_to_index[id(child)]
+                        edges_list.append({"from": child_idx, "to": parent_idx})
+
+            return {
+                "success": True,
+                "column": column,
+                "in_final_output": True,
+                "nodes": nodes_list,
+                "edges": edges_list,
+                "source_tables": list({
+                    n["table"] for n in nodes_list
+                    if n["type"] == "table"
+                }),
+            }
+
+        except SqlglotError:
+            # Fall through to CTE search if lineage() fails
+            pass
+
+    # Column not in final output (or lineage failed) - search CTEs
+    cte_locations = find_column_in_ctes(ast, column)
+
+    if cte_locations:
+        # Extract source tables from found locations
+        source_tables = set()
+        for loc in cte_locations:
+            for src in loc["sources"]:
+                table = src.split(".")[0]
+                if table != "unknown":
+                    source_tables.add(table)
+
+        return {
+            "success": True,
+            "column": column,
+            "in_final_output": False,
+            "found_in": cte_locations,
+            "available_ctes": [cte.alias for cte in ast.find_all(exp.CTE)],
+            "source_tables": list(source_tables),
+            "note": f"Column '{column}' is defined in CTE(s), not in final SELECT output",
+        }
+
+    # Column truly not found anywhere
+    # List available columns to help the agent
+    available_columns = []
+    if hasattr(ast, 'selects'):
+        available_columns = [s.alias_or_name for s in ast.selects]
+
+    # Also list CTE names to help
+    cte_names = [cte.alias for cte in ast.find_all(exp.CTE)]
+
+    return {
+        "success": False,
+        "column": column,
+        "error": f"Column '{column}' not found in query",
+        "available_in_output": available_columns[:10],
+        "available_ctes": cte_names,
+        "hint": "Check spelling. Use analyze_query.py to see all CTEs and their columns.",
+    }
 
 
 def format_output(result: dict, format_type: str) -> str:
@@ -161,39 +233,53 @@ def format_output(result: dict, format_type: str) -> str:
     elif format_type == "tree":
         lines = [f"Column: {result['column']}", ""]
         if result.get("success"):
-            # Reconstruct tree via DFS for display
-            nodes = result["nodes"]
-            edges = result["edges"]
-            
-            # Build adjacency list for children (reverse of edges: parent -> children)
-            children_map = {i: [] for i in range(len(nodes))}
-            for edge in edges:
-                # Edge is from child to parent. We want parent to child for tree view.
-                # edge["from"] is child, edge["to"] is parent
-                children_map[edge["to"]].append(edge["from"])
-            
-            # DFS helper
-            def print_node(node_idx, depth, prefix=""):
-                node = nodes[node_idx]
-                indent = "  " * depth
-                
-                # Format node string
-                if node["type"] == "table":
-                    content = f"└── {node['table']}.{node['column']} (source table)"
-                else:
-                    content = f"└── {node['expression']} ({node['type']})"
-                
-                lines.append(f"{indent}{content}")
-                
-                for child_idx in children_map.get(node_idx, []):
-                    print_node(child_idx, depth + 1)
+            # Check if this is a CTE-found result (no nodes/edges)
+            if result.get("in_final_output") is False and "found_in" in result:
+                lines.append("Note: Column not in final SELECT, found in CTE(s):\n")
+                for loc in result.get("found_in", []):
+                    lines.append(f"CTE: {loc['cte_name']}")
+                    lines.append(f"  Expression: {loc['expression']}")
+                    if loc['sources']:
+                        lines.append(f"  Sources: {', '.join(loc['sources'])}")
+                    lines.append("")
+            else:
+                # Reconstruct tree via DFS for display (existing behavior)
+                nodes = result.get("nodes", [])
+                edges = result.get("edges", [])
 
-            # Start from root (index 0)
-            if nodes:
-                print_node(0, 0)
-                
+                # Build adjacency list for children (reverse of edges: parent -> children)
+                children_map = {i: [] for i in range(len(nodes))}
+                for edge in edges:
+                    # Edge is from child to parent. We want parent to child for tree view.
+                    # edge["from"] is child, edge["to"] is parent
+                    children_map[edge["to"]].append(edge["from"])
+
+                # DFS helper
+                def print_node(node_idx, depth):
+                    node = nodes[node_idx]
+                    indent = "  " * depth
+
+                    # Format node string
+                    if node["type"] == "table":
+                        content = f"└── {node['table']}.{node['column']} (source table)"
+                    else:
+                        content = f"└── {node['expression']} ({node['type']})"
+
+                    lines.append(f"{indent}{content}")
+
+                    for child_idx in children_map.get(node_idx, []):
+                        print_node(child_idx, depth + 1)
+
+                # Start from root (index 0)
+                if nodes:
+                    print_node(0, 0)
+
         else:
             lines.append(f"Error: {result['error']}")
+            if result.get('available_in_output'):
+                lines.append(f"Available columns: {', '.join(result['available_in_output'])}")
+            if result.get('available_ctes'):
+                lines.append(f"Available CTEs: {', '.join(result['available_ctes'])}")
             lines.append(f"Hint: {result.get('hint', '')}")
         return "\n".join(lines)
 
@@ -283,8 +369,8 @@ Examples:
     )
     parser.add_argument(
         "--dialect", "-d",
-        default=None,
-        help="SQL dialect (bigquery, snowflake, postgres, mysql, etc.)",
+        default="redshift",
+        help="SQL dialect (default: redshift). Options: bigquery, snowflake, postgres, mysql, etc.",
     )
     parser.add_argument(
         "--schema", "-s",
