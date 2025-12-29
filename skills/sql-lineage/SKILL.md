@@ -9,7 +9,8 @@ description: |
   - Analyzing query structure and column dependencies
   - Extracting table and column metadata from SQL
   Never guess about column origins - always use these tools for certainty.
-allowed-tools: Read, Bash, Write, Grep, Glob
+model: claude-sonnet-4-20250514
+allowed-tools: Read, Bash, Grep, Glob
 ---
 
 # SQL Lineage Analyzer
@@ -22,6 +23,11 @@ column origins and transformations.
 
 - **Default dialect: Redshift** - No need to specify dialect for Redshift queries
 - **CTE-aware column tracing** - Finds columns in CTEs even if not in final SELECT
+- **Recursive CTE tracing** - Automatically traces through multiple CTE levels to source tables
+- **Expression truncation** - Use `--max-expr-length N` to limit output size for complex queries
+- **Depth limiting** - Use `--depth N` to limit recursive tracing depth
+- **CTE dependency diagrams** - Generate Mermaid flowcharts of CTE dependencies
+- **UNION branch tracking** - Identifies which UNION branch a column comes from
 - **Never fails silently** - Always returns useful context about what was found
 
 ## Quick Reference
@@ -52,6 +58,33 @@ uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   "SELECT * FROM x JOIN y ON x.id = y.id" \
   --column name \
   --schema '{"x": {"id": "INT", "name": "VARCHAR"}, "y": {"id": "INT", "email": "VARCHAR"}}'
+```
+
+### List all CTEs in a query
+```bash
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/list_ctes.py @query.sql
+```
+
+### Generate CTE dependency diagram (Mermaid)
+```bash
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py @query.sql --format diagram
+```
+
+### Get concise summary of query structure
+```bash
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/analyze_query.py @query.sql --format summary
+```
+
+### Trace with expression truncation (for huge queries)
+```bash
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
+  @query.sql --column qis --max-expr-length 200 --format tree
+```
+
+### Limit recursion depth
+```bash
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
+  @query.sql --column total --depth 2
 ```
 
 ### Specify SQL dialect (if not Redshift)

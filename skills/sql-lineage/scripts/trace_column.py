@@ -50,12 +50,22 @@ def parse_schema(schema_str: str | None) -> dict | None:
         sys.exit(f"Error: Invalid JSON schema: {e}")
 
 
-def node_to_dict(node: Node, depth: int = 0) -> dict[str, Any]:
+def truncate_expr(expr: str | None, max_length: int | None) -> str | None:
+    """Truncate expression to max_length if specified."""
+    if expr is None or max_length is None or max_length <= 0:
+        return expr
+    if len(expr) <= max_length:
+        return expr
+    return expr[:max_length] + "..."
+
+
+def node_to_dict(node: Node, depth: int = 0, max_expr_length: int | None = None) -> dict[str, Any]:
     """Convert a lineage Node to a dictionary representation."""
+    expr_sql = node.expression.sql() if node.expression else None
     result = {
         "depth": depth,
         "name": node.name,
-        "expression": node.expression.sql() if node.expression else None,
+        "expression": truncate_expr(expr_sql, max_expr_length),
     }
 
     if isinstance(node.expression, exp.Table):
@@ -79,21 +89,162 @@ def extract_source_columns(expr: exp.Expression) -> list[str]:
     return list(sources)
 
 
-def find_column_in_ctes(ast: exp.Expression, column: str) -> list[dict]:
+def find_column_in_union(ast: exp.Expression, column: str, max_expr_length: int | None = None) -> list[dict]:
+    """Find column definitions across UNION branches."""
+    locations = []
+    
+    # Check for UNION at top level
+    for i, union in enumerate(ast.find_all(exp.Union)):
+        # Left branch
+        left = union.left
+        if hasattr(left, 'selects'):
+            for sel in left.selects:
+                if sel.alias_or_name.lower() == column.lower():
+                    locations.append({
+                        "location": "union_branch",
+                        "branch": f"left_{i+1}",
+                        "expression": truncate_expr(sel.sql(), max_expr_length),
+                        "sources": extract_source_columns(sel),
+                    })
+        
+        # Right branch
+        right = union.right
+        if hasattr(right, 'selects'):
+            for sel in right.selects:
+                if sel.alias_or_name.lower() == column.lower():
+                    locations.append({
+                        "location": "union_branch",
+                        "branch": f"right_{i+1}",
+                        "expression": truncate_expr(sel.sql(), max_expr_length),
+                        "sources": extract_source_columns(sel),
+                    })
+    
+    return locations
+
+
+def find_column_in_ctes(ast: exp.Expression, column: str, max_expr_length: int | None = None) -> list[dict]:
     """Find all CTEs where a column is defined."""
     locations = []
     for cte in ast.find_all(exp.CTE):
         cte_name = cte.alias
-        if hasattr(cte.this, 'selects'):
+        
+        # Check if CTE body is a UNION
+        union_locs = find_column_in_union(cte.this, column, max_expr_length)
+        if union_locs:
+            for loc in union_locs:
+                loc["cte_name"] = cte_name
+                locations.append(loc)
+        elif hasattr(cte.this, 'selects'):
             for sel in cte.this.selects:
                 if sel.alias_or_name.lower() == column.lower():
                     locations.append({
                         "location": "cte",
                         "cte_name": cte_name,
-                        "expression": sel.sql(),
+                        "expression": truncate_expr(sel.sql(), max_expr_length),
                         "sources": extract_source_columns(sel),
                     })
     return locations
+
+
+def build_cte_map(ast: exp.Expression) -> dict[str, exp.CTE]:
+    """Build a map of CTE name -> CTE expression for fast lookup."""
+    return {cte.alias.lower(): cte for cte in ast.find_all(exp.CTE)}
+
+
+def find_column_in_cte(cte: exp.CTE, column: str, max_expr_length: int | None = None) -> dict | None:
+    """Find a specific column definition within a single CTE."""
+    if hasattr(cte.this, 'selects'):
+        for sel in cte.this.selects:
+            if sel.alias_or_name.lower() == column.lower():
+                return {
+                    "cte": cte.alias,
+                    "column": sel.alias_or_name,
+                    "expression": truncate_expr(sel.sql(), max_expr_length),
+                    "sources": extract_source_columns(sel),
+                }
+    return None
+
+
+def trace_cte_lineage_recursive(
+    ast: exp.Expression,
+    column: str,
+    cte_map: dict[str, exp.CTE],
+    max_expr_length: int | None = None,
+    depth: int | None = None,
+    visited: set | None = None,
+) -> list[dict]:
+    """
+    Recursively trace a column through CTEs until we reach base tables.
+    
+    Returns a list representing the full lineage chain from output to source.
+    """
+    if visited is None:
+        visited = set()
+    
+    # Normalize depth: treat 0 or negative as unlimited
+    if depth is not None and depth <= 0:
+        depth = None
+    
+    lineage_chain = []
+    current_depth = 0
+    
+    # Queue of (table_or_cte, column) pairs to trace
+    to_trace = [(None, column)]  # None means search all CTEs
+    
+    while to_trace:
+        if depth is not None and current_depth >= depth:
+            break
+            
+        next_to_trace = []
+        
+        for source_cte, col in to_trace:
+            trace_key = f"{source_cte or 'root'}.{col}".lower()
+            if trace_key in visited:
+                continue
+            visited.add(trace_key)
+            
+            if source_cte:
+                # Look in specific CTE
+                cte = cte_map.get(source_cte.lower())
+                if cte:
+                    col_info = find_column_in_cte(cte, col, max_expr_length)
+                    if col_info:
+                        lineage_chain.append(col_info)
+                        # Queue up sources for next iteration
+                        for src in col_info["sources"]:
+                            parts = src.split(".")
+                            if len(parts) == 2:
+                                src_table, src_col = parts
+                                if src_table.lower() in cte_map:
+                                    next_to_trace.append((src_table, src_col))
+                                elif src_table != "unknown":
+                                    # It's a base table - add terminal node
+                                    lineage_chain.append({
+                                        "table": src_table,
+                                        "column": src_col,
+                                    })
+            else:
+                # Search all CTEs for initial column
+                for cte_name, cte in cte_map.items():
+                    col_info = find_column_in_cte(cte, col, max_expr_length)
+                    if col_info:
+                        lineage_chain.append(col_info)
+                        for src in col_info["sources"]:
+                            parts = src.split(".")
+                            if len(parts) == 2:
+                                src_table, src_col = parts
+                                if src_table.lower() in cte_map:
+                                    next_to_trace.append((src_table, src_col))
+                                elif src_table != "unknown":
+                                    lineage_chain.append({
+                                        "table": src_table,
+                                        "column": src_col,
+                                    })
+        
+        to_trace = next_to_trace
+        current_depth += 1
+    
+    return lineage_chain
 
 
 def trace_column_lineage(
@@ -101,6 +252,8 @@ def trace_column_lineage(
     column: str,
     dialect: str | None = None,
     schema: dict | None = None,
+    max_expr_length: int | None = None,
+    depth: int | None = None,
 ) -> dict[str, Any]:
     """
     Trace a column's complete lineage through the query.
@@ -158,7 +311,7 @@ def trace_column_lineage(
             # Assign indices
             for i, n in enumerate(unique_nodes):
                 node_to_index[id(n)] = i
-                nodes_list.append(node_to_dict(n, 0))
+                nodes_list.append(node_to_dict(n, 0, max_expr_length))
 
             # Build edges
             for n in unique_nodes:
@@ -185,25 +338,32 @@ def trace_column_lineage(
             pass
 
     # Column not in final output (or lineage failed) - search CTEs
-    cte_locations = find_column_in_ctes(ast, column)
+    cte_locations = find_column_in_ctes(ast, column, max_expr_length)
 
     if cte_locations:
-        # Extract source tables from found locations
+        # Build CTE map for recursive tracing
+        cte_map = build_cte_map(ast)
+        
+        # Perform recursive lineage tracing
+        full_lineage = trace_cte_lineage_recursive(
+            ast, column, cte_map, max_expr_length, depth
+        )
+        
+        # Extract source tables (only base tables, not CTEs)
         source_tables = set()
-        for loc in cte_locations:
-            for src in loc["sources"]:
-                table = src.split(".")[0]
-                if table != "unknown":
-                    source_tables.add(table)
+        for item in full_lineage:
+            if "table" in item and "cte" not in item:
+                source_tables.add(item["table"])
 
         return {
             "success": True,
             "column": column,
             "in_final_output": False,
             "found_in": cte_locations,
+            "full_lineage": full_lineage,
             "available_ctes": [cte.alias for cte in ast.find_all(exp.CTE)],
             "source_tables": list(source_tables),
-            "note": f"Column '{column}' is defined in CTE(s), not in final SELECT output",
+            "note": f"Column '{column}' is defined in CTE(s), not in final SELECT output. Full lineage traced recursively.",
         }
 
     # Column truly not found anywhere
@@ -236,11 +396,28 @@ def format_output(result: dict, format_type: str) -> str:
             # Check if this is a CTE-found result (no nodes/edges)
             if result.get("in_final_output") is False and "found_in" in result:
                 lines.append("Note: Column not in final SELECT, found in CTE(s):\n")
+                
+                # Show full lineage chain if available
+                full_lineage = result.get("full_lineage", [])
+                if full_lineage:
+                    lines.append("Full Lineage Chain:")
+                    for i, item in enumerate(full_lineage):
+                        indent = "  " * i
+                        if "cte" in item:
+                            lines.append(f"{indent}└── {item['cte']}.{item['column']}")
+                            if item.get('expression'):
+                                expr_preview = item['expression'][:100] + "..." if len(item.get('expression', '')) > 100 else item.get('expression', '')
+                                lines.append(f"{indent}    Expression: {expr_preview}")
+                        elif "table" in item:
+                            lines.append(f"{indent}└── {item['table']}.{item['column']} (source table)")
+                    lines.append("")
+                
+                # Also show initial findings for context
+                lines.append("Initial CTE Definitions:")
                 for loc in result.get("found_in", []):
-                    lines.append(f"CTE: {loc['cte_name']}")
-                    lines.append(f"  Expression: {loc['expression']}")
+                    lines.append(f"  CTE: {loc['cte_name']}")
                     if loc['sources']:
-                        lines.append(f"  Sources: {', '.join(loc['sources'])}")
+                        lines.append(f"    Sources: {', '.join(loc['sources'])}")
                     lines.append("")
             else:
                 # Reconstruct tree via DFS for display (existing behavior)
@@ -383,13 +560,25 @@ Examples:
         default="json",
         help="Output format (default: json)",
     )
+    parser.add_argument(
+        "--max-expr-length", "-m",
+        type=int,
+        default=None,
+        help="Max characters for expression output (truncates with '...')",
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        help="Max depth for recursive CTE tracing (default: unlimited)",
+    )
 
     args = parser.parse_args()
 
     sql = read_input(args.sql)
     schema = parse_schema(args.schema)
 
-    result = trace_column_lineage(sql, args.column, args.dialect, schema)
+    result = trace_column_lineage(sql, args.column, args.dialect, schema, args.max_expr_length, args.depth)
     print(format_output(result, args.format))
 
     sys.exit(0 if result.get("success") else 1)
