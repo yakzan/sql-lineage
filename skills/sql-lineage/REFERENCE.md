@@ -135,13 +135,21 @@ The output is a directed graph where `edges` connect nodes (child → parent).
 - `sql` (positional): SQL query string or `@filepath`
 - `--source-column, -c`: Source column to analyze (required). Can be `table.column` or just `column`
 - `--dialect, -d`: SQL dialect (default: redshift)
-- `--format, -f`: Output format: `json` (default), `tree`
+- `--format, -f`: Output format: `json` (default), `tree`, `graph`
 - `--max-expr-length`: Maximum length for expression strings (default: unlimited)
 - `--max-sources`: Maximum number of available source columns to return (default: unlimited)
 - `--summary-only`: Omit expression fields for lightweight output (ideal for agents)
 - `--include-line-numbers`: Include line numbers where CTEs and SELECT are defined
+- `--include-graph`: Include a node/edge graph in JSON (or use `-f graph` to emit only the graph)
+- `--diff-old / --diff-new`: Compare two SQL versions for the same source column (reverse-lineage diff)
+- Diff mode supports `json`/`graph` output only and requires full expressions (no `--summary-only` or `--max-expr-length`).
 - Columns are qualified with sqlglot’s `qualify`, so both table aliases and base table names are accepted (e.g., `o.status` or `orders.status`).
 - UNION branches are analyzed separately; source columns remain branch-specific (e.g., `orders.status` vs `archived_orders.status`).
+- Inline subqueries are traversed like anonymous CTEs, so impact flows through them as well:
+  ```sql
+  SELECT t.doubled FROM (SELECT amount * 2 AS doubled FROM orders) t
+  -- Changing orders.amount correctly impacts output.doubled
+  ```
 
 **Output (JSON):**
 ```json
@@ -192,6 +200,54 @@ The output is a directed graph where `edges` connect nodes (child → parent).
 
 **Output with `--summary-only`:**
 Omits the `expression` field from all columns, reducing output size significantly for large queries.
+
+**Graph output (`-f graph` or `--include-graph`):**
+Returns a machine-parseable structure:
+```json
+{
+  "nodes": [
+    {"id": "orders.status", "kind": "source", "label": "orders.status"},
+    {"id": "output.status_flag", "kind": "output", "column": "status_flag", "label": "output.status_flag"}
+  ],
+  "edges": [{"source": "orders.status", "target": "output.status_flag"}]
+}
+```
+Node `kind` values: `source`, `output`, `cte`, `subquery`.
+
+**Diff impact (`--diff-old/--diff-new`):**
+Requires full expressions (no summary/truncation) and outputs `json` or `graph`.
+```json
+{
+  "success": true,
+  "source_column": "orders.status",
+  "diff_summary": {
+    "outputs_added": 1,
+    "outputs_removed": 0,
+    "outputs_changed": 0,
+    "ctes_added": 0,
+    "ctes_removed": 0,
+    "ctes_changed": 1
+  },
+  "outputs": {
+    "added": [{"column": "new_flag", "position": 4, "expression": "..."}],
+    "removed": [],
+    "changed": []
+  },
+  "ctes": {
+    "added": [],
+    "removed": [],
+    "changed": [
+      {
+        "name": "order_stats.cancel_rate",
+        "old": {"cte": "order_stats", "column": "cancel_rate", "expression": "canceled / total"},
+        "new": {"cte": "order_stats", "column": "cancel_rate", "expression": "canceled / NULLIF(total, 0)"}
+      }
+    ]
+  },
+  "graphs": null
+}
+```
+When `--include-graph` is used with diff, `graphs` contains `{"old": {...}, "new": {...}}`.
 
 **Agent Workflow Pattern:**
 For large queries with many CTEs, use the two-phase approach:

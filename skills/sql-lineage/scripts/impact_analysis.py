@@ -20,7 +20,7 @@ import argparse
 import json
 import re
 import sys
-from typing import Any
+from typing import Any, Iterable
 
 import sqlglot
 from sqlglot import exp
@@ -163,18 +163,27 @@ def build_dependency_graph(
     - Keys are column identifiers (e.g., "cte_name.column_name" or "output.column_name")
     - Values are dicts with:
         - "sources": set of source column identifiers this column depends on
-        - "location": where this column is defined ("cte", "output", etc.)
+        - "location": where this column is defined ("cte", "output", "subquery")
         - "expression": the SQL expression
     """
     graph = {}
+    processed_subqueries: set[int] = set()
+    subquery_counter = 0
 
-    def collect_table_aliases(relation: exp.Expression) -> dict[str, str]:
+    def next_subquery_name() -> str:
+        nonlocal subquery_counter
+        subquery_counter += 1
+        return f"subq{subquery_counter}"
+
+    def collect_table_aliases(relation: exp.Expression, subquery_aliases: dict[str, str]) -> dict[str, str]:
         mapping: dict[str, str] = {}
         for table in relation.find_all(exp.Table):
             alias = (table.alias or table.name or "").lower()
             base = (table.name or "").lower()
             if alias:
                 mapping[alias] = base
+        # Map subquery aliases to their generated names so impact can traverse them
+        mapping.update(subquery_aliases)
         return mapping
 
     def process_relation(relation: exp.Expression, location: str, name: str):
@@ -187,8 +196,22 @@ def build_dependency_graph(
         if not hasattr(relation, "selects"):
             return
 
+        # Discover inline subqueries in this relation (FROM / JOIN, etc.)
+        subquery_aliases: dict[str, str] = {}
+        for sub in relation.find_all(exp.Subquery):
+            sub_id = id(sub)
+            if sub_id in processed_subqueries:
+                continue
+            processed_subqueries.add(sub_id)
+
+            sub_alias = (sub.alias or "").lower()
+            sub_name = sub_alias or next_subquery_name()
+            process_relation(sub.this, "subquery", sub_name)
+            if sub_alias:
+                subquery_aliases[sub_alias] = sub_name
+
         alias_map = build_alias_map(relation.selects)
-        alias_table_map = collect_table_aliases(relation)
+        alias_table_map = collect_table_aliases(relation, subquery_aliases)
 
         for i, sel in enumerate(relation.selects):
             col_name = sel.alias_or_name.lower()
@@ -197,7 +220,7 @@ def build_dependency_graph(
             graph[col_id] = {
                 "sources": sources,
                 "location": location,
-                "cte_name": name if location == "cte" else None,
+                "cte_name": name if location in {"cte", "subquery"} else None,
                 "output_position": i + 1 if location == "output" else None,
                 "column_name": col_name,
                 "expression": truncate_expr(sel.sql(dialect=dialect), max_expr_length),
@@ -233,7 +256,7 @@ def find_impacted_columns(
     source_column: str,
     graph: dict[str, dict],
     reverse_index: dict[str, set[str]],
-    cte_names: set[str],
+    derived_names: set[str],
 ) -> dict[str, Any]:
     """
     Find all columns impacted by a change to source_column.
@@ -276,11 +299,10 @@ def find_impacted_columns(
             # (CTE columns can be referenced by other CTEs or output)
             parts = dep.split(".")
             if len(parts) == 2:
-                cte_or_loc, col = parts
-                if cte_or_loc in cte_names:
-                    # This is a CTE column, it might be used elsewhere
-                    # Check both with CTE name prefix and as "unknown.col"
-                    cte_col_ref = f"{cte_or_loc}.{col}"
+                relation, col = parts
+                if relation in derived_names:
+                    # This is a derived relation (CTE or subquery); keep traversing
+                    cte_col_ref = f"{relation}.{col}"
                     unknown_col_ref = f"unknown.{col}"
                     if cte_col_ref not in visited:
                         queue.append(cte_col_ref)
@@ -327,6 +349,7 @@ def analyze_impact(
     max_sources: int | None = None,
     summary_only: bool = False,
     include_line_numbers: bool = False,
+    include_graph: bool = False,
 ) -> dict[str, Any]:
     """
     Analyze the impact of changing a source column.
@@ -366,11 +389,11 @@ def analyze_impact(
     # Build reverse index
     reverse_index = build_reverse_index(graph)
 
-    # Get CTE names for transitive dependency tracking
-    cte_names = {cte.alias.lower() for cte in ast.find_all(exp.CTE)}
+    # Get derived relation names (CTEs and inline subqueries) for transitive dependency tracking
+    derived_names = {key.split(".")[0] for key in graph.keys() if key.split(".")[0] not in {"output", "unknown"}}
 
     # Find impacted columns
-    result = find_impacted_columns(source_column, graph, reverse_index, cte_names)
+    result = find_impacted_columns(source_column, graph, reverse_index, derived_names)
 
     # Add available source columns for reference
     if result.get("success"):
@@ -382,6 +405,7 @@ def analyze_impact(
 
         # Add line numbers if requested
         if include_line_numbers:
+            cte_names = {cte.alias.lower() for cte in ast.find_all(exp.CTE)}
             line_info = find_line_numbers(sql, cte_names)
             result["line_numbers"] = line_info
 
@@ -405,8 +429,123 @@ def analyze_impact(
                 col.pop("expression", None)
             for col in result.get("impacted_cte_columns", []):
                 col.pop("expression", None)
+        if include_graph:
+            result["graph"] = export_graph(graph)
 
     return result
+
+
+def export_graph(graph: dict[str, dict]) -> dict[str, list[dict[str, str]]]:
+    """Convert internal graph to a machine-parseable node/edge structure."""
+    nodes: dict[str, dict[str, str]] = {}
+    edges: list[dict[str, str]] = []
+
+    def add_node(node_id: str, kind: str, extra: dict[str, str] | None = None):
+        if node_id not in nodes:
+            nodes[node_id] = {"id": node_id, "kind": kind}
+            if extra:
+                nodes[node_id].update(extra)
+
+    for col_id, info in graph.items():
+        location = info.get("location", "unknown")
+        add_node(
+            col_id,
+            kind=location,
+            extra={
+                "column": info.get("column_name", ""),
+                "label": f"{col_id}",
+            },
+        )
+        for src in info.get("sources", []):
+            add_node(src, kind="source", extra={"label": src})
+            edges.append({"source": src, "target": col_id})
+
+    return {"nodes": list(nodes.values()), "edges": edges}
+
+
+def diff_impact(
+    old_sql: str,
+    new_sql: str,
+    source_column: str,
+    dialect: str | None = None,
+    max_expr_length: int | None = None,
+    summary_only: bool = False,
+    include_graph: bool = False,
+) -> dict[str, Any]:
+    """Compare impact across two SQL versions."""
+    if summary_only or max_expr_length not in {None, 0}:
+        return {"success": False, "error": "Diff mode requires full expressions; remove summary/truncation flags"}
+    old_result = analyze_impact(
+        old_sql,
+        source_column,
+        dialect=dialect,
+        max_expr_length=max_expr_length,
+        summary_only=summary_only,
+        include_graph=include_graph,
+    )
+    if not old_result.get("success"):
+        return {"success": False, "error": f"Old SQL failed: {old_result.get('error')}"}
+
+    new_result = analyze_impact(
+        new_sql,
+        source_column,
+        dialect=dialect,
+        max_expr_length=max_expr_length,
+        summary_only=summary_only,
+        include_graph=include_graph,
+    )
+    if not new_result.get("success"):
+        return {"success": False, "error": f"New SQL failed: {new_result.get('error')}"}
+
+    def index_output(cols: Iterable[dict]) -> dict[str, dict]:
+        return {f"output.{c['column']}": c for c in cols}
+
+    def index_cte(cols: Iterable[dict]) -> dict[str, dict]:
+        return {f"{c['cte']}.{c['column']}": c for c in cols}
+
+    old_out = index_output(old_result.get("impacted_output_columns", []))
+    new_out = index_output(new_result.get("impacted_output_columns", []))
+    old_cte = index_cte(old_result.get("impacted_cte_columns", []))
+    new_cte = index_cte(new_result.get("impacted_cte_columns", []))
+
+    def diff_maps(old_map: dict[str, dict], new_map: dict[str, dict]):
+        added = sorted(set(new_map) - set(old_map))
+        removed = sorted(set(old_map) - set(new_map))
+        changed = []
+        for key in set(old_map).intersection(new_map):
+            if old_map[key].get("expression") != new_map[key].get("expression"):
+                changed.append(key)
+        return added, removed, sorted(changed)
+
+    added_out, removed_out, changed_out = diff_maps(old_out, new_out)
+    added_cte, removed_cte, changed_cte = diff_maps(old_cte, new_cte)
+
+    return {
+        "success": True,
+        "source_column": source_column,
+        "diff_summary": {
+            "outputs_added": len(added_out),
+            "outputs_removed": len(removed_out),
+            "outputs_changed": len(changed_out),
+            "ctes_added": len(added_cte),
+            "ctes_removed": len(removed_cte),
+            "ctes_changed": len(changed_cte),
+        },
+        "outputs": {
+            "added": [new_out[k] for k in added_out],
+            "removed": [old_out[k] for k in removed_out],
+            "changed": [{"name": k, "old": old_out[k], "new": new_out[k]} for k in changed_out],
+        },
+        "ctes": {
+            "added": [new_cte[k] for k in added_cte],
+            "removed": [old_cte[k] for k in removed_cte],
+            "changed": [{"name": k, "old": old_cte[k], "new": new_cte[k]} for k in changed_cte],
+        },
+        "graphs": {
+            "old": old_result.get("graph"),
+            "new": new_result.get("graph"),
+        } if include_graph else None,
+    }
 
 
 def format_as_tree(result: dict) -> str:
@@ -475,6 +614,7 @@ Examples:
 
     parser.add_argument(
         "sql",
+        nargs="?",
         help="SQL query string, or @filepath to read from file",
     )
     parser.add_argument(
@@ -489,7 +629,7 @@ Examples:
     )
     parser.add_argument(
         "--format", "-f",
-        choices=["json", "tree"],
+        choices=["json", "tree", "graph"],
         default="json",
         help="Output format (default: json)",
     )
@@ -515,22 +655,63 @@ Examples:
         action="store_true",
         help="Include line numbers where CTEs and columns are defined",
     )
+    parser.add_argument(
+        "--include-graph",
+        action="store_true",
+        help="Include node/edge graph data in JSON output",
+    )
+    parser.add_argument(
+        "--diff-old",
+        help="Old SQL string or @filepath for impact diff mode",
+    )
+    parser.add_argument(
+        "--diff-new",
+        help="New SQL string or @filepath for impact diff mode",
+    )
 
     args = parser.parse_args()
+    want_graph = args.include_graph or args.format == "graph"
 
-    sql = read_input(args.sql)
-    result = analyze_impact(
-        sql,
-        args.source_column,
-        args.dialect,
-        args.max_expr_length,
-        args.max_sources,
-        args.summary_only,
-        args.include_line_numbers,
-    )
+    # Diff mode requires both old and new SQL
+    if args.diff_old or args.diff_new:
+        if not (args.diff_old and args.diff_new):
+            sys.exit("Error: --diff-old and --diff-new must be provided together")
+        if args.format == "tree":
+            sys.exit("Error: diff mode supports only json or graph output")
+        if args.summary_only:
+            sys.exit("Error: --summary-only is not supported in diff mode (needs full expressions to compare)")
+        if args.max_expr_length not in {None, 0}:
+            sys.exit("Error: --max-expr-length is not supported in diff mode (needs full expressions to compare)")
+        old_sql = read_input(args.diff_old)
+        new_sql = read_input(args.diff_new)
+        result = diff_impact(
+            old_sql,
+            new_sql,
+            args.source_column,
+            dialect=args.dialect,
+            max_expr_length=args.max_expr_length,
+            summary_only=args.summary_only,
+            include_graph=want_graph,
+        )
+    else:
+        if not args.sql:
+            sys.exit("Error: SQL is required unless using diff mode")
+        sql = read_input(args.sql)
+        result = analyze_impact(
+            sql,
+            args.source_column,
+            args.dialect,
+            args.max_expr_length,
+            args.max_sources,
+            args.summary_only,
+            args.include_line_numbers,
+            want_graph,
+        )
 
     if args.format == "tree":
         print(format_as_tree(result))
+    elif args.format == "graph":
+        print(json.dumps(result.get("graph") or result.get("graphs"), indent=2))
     else:
         print(json.dumps(result, indent=2))
 

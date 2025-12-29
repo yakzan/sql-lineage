@@ -18,6 +18,7 @@ from impact_analysis import (
     build_dependency_graph,
     build_reverse_index,
     find_line_numbers,
+    diff_impact,
 )
 import sqlglot
 from sqlglot import exp
@@ -326,20 +327,16 @@ class TestEdgeCases:
         # Should find status in both branches
         assert result["impact_summary"]["total_affected"] >= 1
 
-    def test_impact_subquery_limitation(self):
-        """Document: inline subqueries are not traversed (only CTEs are)."""
+    def test_impact_subquery_traversal(self):
+        """Inline subqueries are traversed like anonymous CTEs."""
         sql = """
         SELECT t.doubled FROM (
             SELECT amount * 2 AS doubled FROM orders
         ) t
         """
-        # Current limitation: inline subqueries not traversed
-        # Impact analysis works with CTEs, not inline subqueries
         result = analyze_impact(sql, "amount")
-        # This returns False because subquery columns aren't in the graph
-        assert result["success"] is False
-        # But the available sources show the subquery alias
-        assert "t.doubled" in result.get("available_sources", [])
+        assert result["success"] is True
+        assert any(col["column"] == "doubled" for col in result.get("impacted_output_columns", []))
 
     def test_impact_with_join_same_column_name(self):
         """Handle same column name from multiple tables in JOIN."""
@@ -375,6 +372,18 @@ class TestEdgeCases:
         assert result["success"] is True
         # Ensure archived_orders remains separately addressable
         assert any("archived_orders.status" in s for s in result.get("available_source_columns", []))
+
+    def test_inline_subquery_is_traversed(self):
+        """Inline subqueries should be treated like anonymous CTEs."""
+        sql = """
+        SELECT t.total
+        FROM (
+            SELECT amount AS total FROM orders
+        ) t
+        """
+        result = analyze_impact(sql, "orders.amount")
+        assert result["success"] is True
+        assert any(col["column"] == "total" for col in result.get("impacted_output_columns", []))
 
     # Self-referencing edge cases
     def test_self_ref_with_case_expression(self):
@@ -560,3 +569,33 @@ SELECT doubled FROM calc"""
         assert "line_numbers" in result
         # Should have final_select but no CTEs
         assert "final_select" in result["line_numbers"]
+
+
+class TestGraphAndDiffOutputs:
+    """Tests for graph export and diff impact."""
+
+    def test_graph_output_contains_nodes_and_edges(self):
+        sql = "SELECT id, amount * 2 AS doubled FROM orders"
+        result = analyze_impact(sql, "orders.amount", include_graph=True)
+        assert result["success"] is True
+        graph = result.get("graph", {})
+        node_ids = {n["id"] for n in graph.get("nodes", [])}
+        assert "output.doubled" in node_ids
+        # There should be an edge from orders.amount to output.doubled
+        assert any(e["source"] == "orders.amount" and e["target"] == "output.doubled"
+                   for e in graph.get("edges", []))
+
+    def test_diff_impact_reports_added_and_removed(self):
+        old_sql = "SELECT id, amount FROM orders"
+        new_sql = "SELECT id, amount, amount * 2 AS doubled FROM orders"
+        diff = diff_impact(old_sql, new_sql, "orders.amount", include_graph=False)
+        assert diff["success"] is True
+        assert diff["diff_summary"]["outputs_added"] == 1
+        assert diff["diff_summary"]["outputs_removed"] == 0
+        added_names = {c["column"] for c in diff["outputs"]["added"]}
+        assert "doubled" in added_names
+
+    def test_diff_impact_rejects_summary_only_or_truncation(self):
+        diff = diff_impact("SELECT amount FROM orders", "SELECT amount FROM orders", "orders.amount", summary_only=True)
+        assert diff["success"] is False
+        assert "requires full expressions" in diff["error"]
