@@ -76,6 +76,28 @@ Options:
   --sql-only      Output only the qualified SQL
 ```
 
+### impact_analysis.py
+Reverse lineage: find all columns affected by changing a source column.
+
+```bash
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/impact_analysis.py "SQL" --source-column COLUMN [OPTIONS]
+
+Options:
+  -c, --source-column     Source column to analyze (required)
+  -d, --dialect           SQL dialect (default: redshift)
+  -f, --format            Output: json (default), tree, graph
+  --max-expr-length       Max expression length (default: unlimited)
+  --max-sources           Max source columns to return (default: unlimited)
+  --summary-only          Omit expressions for lightweight output (agent-friendly)
+  --include-line-numbers  Include line numbers where CTEs are defined
+  --include-graph         Embed node/edge graph in JSON (or use -f graph)
+  --diff-old / --diff-new Compare two SQL versions for the same source column
+  # Diff mode uses json/graph only and requires full expressions (no summary/truncation).
+  # Columns are qualified, so you can target either aliases or base table names.
+  # UNION branches keep their own sources (orders.status vs archived_orders.status).
+  # Inline subqueries are traversed like anonymous CTEs.
+```
+
 ## Supported SQL Dialects
 
 | Dialect | Flag |
@@ -166,10 +188,15 @@ uv run pytest tests/test_trace_column.py -v
 
 | Test File | Description | Tests |
 |-----------|-------------|-------|
-| `test_trace_column.py` | Column lineage tracing | 10 |
+| `test_trace_column.py` | Column lineage tracing | 13 |
 | `test_analyze_query.py` | Query analysis | 4 |
 | `test_extract_tables.py` | Table extraction | 4 |
 | `test_qualify_columns.py` | Column qualification | 5 |
+| `test_list_ctes.py` | CTE listing | 5 |
+| `test_new_features.py` | Expression truncation, depth limits, diagrams | 15 |
+| `test_impact_analysis.py` | Impact analysis, self-ref resolution, data types, aggregation, summary/line-numbers, alias/base matching, UNION branches, graph export, diff impact, inline subqueries | 50 |
+
+**Total: 97 tests**
 
 ## License
 

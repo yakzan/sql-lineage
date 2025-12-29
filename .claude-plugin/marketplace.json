@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "SQL analysis plugins for Claude Code",
-    "version": "1.0.0"
+    "version": "1.2.0"
   },
   "plugins": [
     {
@@ -13,9 +13,9 @@
       "source": {
         "source": "github",
         "repo": "yakzan/sql-lineage"
-      },      
+      },
       "description": "Deterministic SQL analysis using sqlglot AST parsing. Trace column lineage, understand query transformations, and debug field origins with certainty.",
-      "version": "1.0.0",
+      "version": "1.2.0",
       "author": {
         "name": "Hay Bin Yakzan"
       },

@@ -4,7 +4,8 @@
       "Bash(uv run:*)",
       "WebFetch(domain:sqlglot.com)",
       "WebSearch",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "Bash(time uv run:*)"
     ]
   }
 }

@@ -12,7 +12,8 @@ SCRIPT_PATH = Path(__file__).parent.parent / "skills" / "sql-lineage" / "scripts
 
 def run_trace(sql: str, column: str, format: str = "json", dialect: str = None) -> dict:
     """Run trace_column.py and return parsed result."""
-    cmd = ["uv", "run", str(SCRIPT_PATH), sql, "--column", column, "--format", format]
+    # Use the active Python interpreter to avoid uv cache/permission issues in CI or sandboxes.
+    cmd = [sys.executable, str(SCRIPT_PATH), sql, "--column", column, "--format", format]
     if dialect:
         cmd.extend(["--dialect", dialect])
 
