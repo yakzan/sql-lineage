@@ -49,6 +49,15 @@ def parse_schema(schema_str: str | None) -> dict | None:
         sys.exit(f"Error: Invalid JSON schema: {e}")
 
 
+def truncate_expr(expr: str | None, max_length: int | None) -> str | None:
+    """Truncate expression to max_length if specified."""
+    if expr is None or max_length is None or max_length <= 0:
+        return expr
+    if len(expr) <= max_length:
+        return expr
+    return expr[:max_length] + "..."
+
+
 def classify_transformation(select_expr: exp.Expression) -> str:
     """Classify the type of transformation applied to a column."""
     if isinstance(select_expr, exp.Column):
@@ -84,7 +93,7 @@ def extract_source_columns(expr: exp.Expression) -> list[dict]:
     return sources
 
 
-def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None) -> dict:
+def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None, max_expr_length: int | None = None) -> dict:
     """Analyze a SELECT statement."""
     result = {
         "query_type": "SELECT",
@@ -132,7 +141,7 @@ def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None
             col_info = {
                 "output_position": i + 1,
                 "output_name": select_expr.alias_or_name,
-                "expression": select_expr.sql(dialect=dialect),
+                "expression": truncate_expr(select_expr.sql(dialect=dialect), max_expr_length),
                 "transformation": classify_transformation(select_expr),
                 "sources": extract_source_columns(select_expr),
             }
@@ -191,6 +200,7 @@ def analyze_query(
     sql: str,
     dialect: str | None = None,
     schema: dict | None = None,
+    max_expr_length: int | None = None,
 ) -> dict[str, Any]:
     """
     Perform full analysis of a SQL query.
@@ -201,12 +211,12 @@ def analyze_query(
         ast = sqlglot.parse_one(sql, dialect=dialect)
 
         if isinstance(ast, exp.Select):
-            return {"success": True, **analyze_select(ast, dialect, schema)}
+            return {"success": True, **analyze_select(ast, dialect, schema, max_expr_length)}
 
         elif isinstance(ast, exp.Create):
             # Handle CREATE TABLE ... AS SELECT
             if ast.expression and isinstance(ast.expression, exp.Select):
-                result = analyze_select(ast.expression, dialect, schema)
+                result = analyze_select(ast.expression, dialect, schema, max_expr_length)
                 result["query_type"] = "CREATE_TABLE_AS_SELECT"
                 result["target_table"] = ast.this.name if ast.this else None
                 return {"success": True, **result}
@@ -221,9 +231,15 @@ def analyze_query(
             if ast.this:
                 result["target_table"] = ast.this.name
             if ast.expression and isinstance(ast.expression, exp.Select):
-                select_analysis = analyze_select(ast.expression, dialect, schema)
+                select_analysis = analyze_select(ast.expression, dialect, schema, max_expr_length)
                 result.update(select_analysis)
                 result["query_type"] = "INSERT_SELECT"
+            return {"success": True, **result}
+
+        elif isinstance(ast, exp.Union):
+            # Handle UNION queries - analyze the full union as a select-like structure
+            result = analyze_select(ast, dialect, schema, max_expr_length)
+            result["query_type"] = "UNION"
             return {"success": True, **result}
 
         else:
@@ -239,6 +255,102 @@ def analyze_query(
             "error": str(e),
             "hint": "Check SQL syntax and dialect setting.",
         }
+
+
+def build_cte_dependencies(ast: exp.Expression) -> dict:
+    """
+    Build a map of CTE dependencies.
+    
+    Returns: {cte_name: [list of CTEs/tables it references]}
+    """
+    dependencies = {}
+    
+    for cte in ast.find_all(exp.CTE):
+        cte_name = cte.alias
+        refs = []
+        for table in cte.this.find_all(exp.Table):
+            table_name = table.name
+            if table_name:
+                refs.append(table_name)
+        dependencies[cte_name] = list(set(refs))
+    
+    return dependencies
+
+
+def format_as_diagram(result: dict, dependencies: dict) -> str:
+    """Format CTE dependencies as a Mermaid flowchart."""
+    lines = ["```mermaid", "flowchart TD"]
+    
+    if not dependencies:
+        lines.append("    no_ctes[No CTEs found]")
+    else:
+        # Collect all nodes (CTEs and tables they reference)
+        cte_names = set(dependencies.keys())
+        cte_names_lower = {name.lower() for name in cte_names}
+        
+        all_tables = set()
+        for refs in dependencies.values():
+            all_tables.update(refs)
+        
+        # Base tables: referenced tables that are not CTEs (case-insensitive check)
+        base_tables = {t for t in all_tables if t.lower() not in cte_names_lower}
+        
+        # Add edges
+        for cte_name, refs in dependencies.items():
+            safe_cte = cte_name.replace("-", "_").replace(" ", "_")
+            for ref in refs:
+                safe_ref = ref.replace("-", "_").replace(" ", "_")
+                lines.append(f"    {safe_ref} --> {safe_cte}")
+        
+        # Style base tables differently
+        if base_tables:
+            lines.append(f"    classDef baseTable fill:#2d5a2d,stroke:#4a4a4a,color:#ffffff")
+            for bt in base_tables:
+                safe_bt = bt.replace("-", "_").replace(" ", "_")
+                lines.append(f"    class {safe_bt} baseTable")
+    
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def format_as_summary(result: dict, dependencies: dict) -> str:
+    """Format as a concise summary showing table-to-table dependencies."""
+    lines = ["# SQL Summary\n"]
+    
+    # Source tables (base tables, not CTEs)
+    cte_names = {cte["name"].lower() for cte in result.get("ctes", [])}
+    source_tables = set()
+    for t in result.get("tables", []):
+        if t["name"].lower() not in cte_names:
+            source_tables.add(t["name"])
+    
+    if source_tables:
+        lines.append("## Source Tables\n")
+        for t in sorted(source_tables):
+            lines.append(f"- {t}")
+        lines.append("")
+    
+    # CTE chain
+    if result.get("ctes"):
+        lines.append("## CTE Chain\n")
+        for cte in result["ctes"]:
+            refs = dependencies.get(cte["name"], [])
+            if refs:
+                lines.append(f"- **{cte['name']}** ← {', '.join(refs)}")
+            else:
+                lines.append(f"- **{cte['name']}**")
+        lines.append("")
+    
+    # Final output
+    if result.get("columns"):
+        lines.append(f"## Output ({len(result['columns'])} columns)\n")
+        col_names = [c["output_name"] for c in result["columns"][:10]]
+        lines.append(", ".join(col_names))
+        if len(result["columns"]) > 10:
+            lines.append(f"... (+{len(result['columns']) - 10} more)")
+        lines.append("")
+    
+    return "\n".join(lines)
 
 
 def format_as_markdown(result: dict) -> str:
@@ -296,8 +408,8 @@ def main():
     )
     parser.add_argument(
         "--dialect", "-d",
-        default=None,
-        help="SQL dialect (bigquery, snowflake, postgres, mysql, etc.)",
+        default="redshift",
+        help="SQL dialect (default: redshift). Options: bigquery, snowflake, postgres, mysql, etc.",
     )
     parser.add_argument(
         "--schema", "-s",
@@ -306,14 +418,20 @@ def main():
     )
     parser.add_argument(
         "--format", "-f",
-        choices=["json", "markdown"],
+        choices=["json", "markdown", "diagram", "summary"],
         default="json",
-        help="Output format (default: json)",
+        help="Output format (default: json). 'diagram' outputs Mermaid flowchart of CTE deps.",
     )
     parser.add_argument(
         "--output", "-o",
         default=None,
         help="Output file path (default: stdout)",
+    )
+    parser.add_argument(
+        "--max-expr-length", "-m",
+        type=int,
+        default=None,
+        help="Max characters for expression output (truncates with '...')",
     )
 
     args = parser.parse_args()
@@ -321,10 +439,38 @@ def main():
     sql = read_input(args.sql)
     schema = parse_schema(args.schema)
 
-    result = analyze_query(sql, args.dialect, schema)
+    result = analyze_query(sql, args.dialect, schema, args.max_expr_length)
+    
+    # Handle parse errors early - show error clearly regardless of format
+    if not result.get("success"):
+        if args.format == "json":
+            output = json.dumps(result, indent=2)
+        else:
+            output = f"Error: {result.get('error')}\nHint: {result.get('hint', '')}"
+        
+        if args.output:
+            with open(args.output, "w") as f:
+                f.write(output)
+            print(f"Analysis written to {args.output}")
+        else:
+            print(output)
+        sys.exit(1)
+    
+    # Build CTE dependencies for diagram/summary formats
+    cte_deps = {}
+    if args.format in ("diagram", "summary"):
+        try:
+            ast = sqlglot.parse_one(sql, dialect=args.dialect)
+            cte_deps = build_cte_dependencies(ast)
+        except SqlglotError:
+            pass
 
     if args.format == "markdown":
         output = format_as_markdown(result)
+    elif args.format == "diagram":
+        output = format_as_diagram(result, cte_deps)
+    elif args.format == "summary":
+        output = format_as_summary(result, cte_deps)
     else:
         output = json.dumps(result, indent=2)
 
