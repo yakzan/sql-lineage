@@ -80,45 +80,90 @@ def node_to_dict(node: Node, depth: int = 0, max_expr_length: int | None = None)
     return result
 
 
-def extract_source_columns(expr: exp.Expression) -> list[str]:
-    """Extract source column references from an expression (deduplicated)."""
+def extract_source_columns(
+    expr: exp.Expression,
+    alias_map: dict[str, exp.Expression] | None = None,
+    _visited: set[str] | None = None,
+) -> list[str]:
+    """
+    Extract source column references from an expression (deduplicated).
+
+    Args:
+        expr: The expression to analyze
+        alias_map: Optional map of column aliases to their expressions (for self-reference resolution)
+        _visited: Internal set to track visited aliases and prevent infinite recursion
+    """
     sources = set()
+    alias_map = alias_map or {}
+    visited = _visited if _visited is not None else set()
+
     for col in expr.find_all(exp.Column):
         table = col.table or "unknown"
-        sources.add(f"{table}.{col.name}")
+        col_name = col.name.lower()
+
+        # Self-referencing resolution: if table is unknown, check if it's an earlier alias
+        if table == "unknown" and col_name in alias_map and col_name not in visited:
+            # Mark as visited to prevent infinite recursion
+            visited.add(col_name)
+            # Recursively extract sources from the referenced alias's expression
+            alias_sources = extract_source_columns(alias_map[col_name], alias_map, visited)
+            sources.update(alias_sources)
+        else:
+            sources.add(f"{table}.{col.name}")
+
     return list(sources)
+
+
+def build_alias_map(selects: list[exp.Expression]) -> dict[str, exp.Expression]:
+    """
+    Build a map of column aliases to their expressions from a SELECT list.
+
+    This enables resolution of self-referencing columns (columns that reference
+    earlier aliases in the same SELECT).
+    """
+    alias_map = {}
+    for sel in selects:
+        alias_name = sel.alias_or_name.lower()
+        # Store the actual expression (unwrap Alias if present)
+        if isinstance(sel, exp.Alias):
+            alias_map[alias_name] = sel.this
+        else:
+            alias_map[alias_name] = sel
+    return alias_map
 
 
 def find_column_in_union(ast: exp.Expression, column: str, max_expr_length: int | None = None) -> list[dict]:
     """Find column definitions across UNION branches."""
     locations = []
-    
+
     # Check for UNION at top level
     for i, union in enumerate(ast.find_all(exp.Union)):
         # Left branch
         left = union.left
         if hasattr(left, 'selects'):
+            alias_map = build_alias_map(left.selects)
             for sel in left.selects:
                 if sel.alias_or_name.lower() == column.lower():
                     locations.append({
                         "location": "union_branch",
                         "branch": f"left_{i+1}",
                         "expression": truncate_expr(sel.sql(), max_expr_length),
-                        "sources": extract_source_columns(sel),
+                        "sources": extract_source_columns(sel, alias_map),
                     })
-        
+
         # Right branch
         right = union.right
         if hasattr(right, 'selects'):
+            alias_map = build_alias_map(right.selects)
             for sel in right.selects:
                 if sel.alias_or_name.lower() == column.lower():
                     locations.append({
                         "location": "union_branch",
                         "branch": f"right_{i+1}",
                         "expression": truncate_expr(sel.sql(), max_expr_length),
-                        "sources": extract_source_columns(sel),
+                        "sources": extract_source_columns(sel, alias_map),
                     })
-    
+
     return locations
 
 
@@ -127,7 +172,7 @@ def find_column_in_ctes(ast: exp.Expression, column: str, max_expr_length: int |
     locations = []
     for cte in ast.find_all(exp.CTE):
         cte_name = cte.alias
-        
+
         # Check if CTE body is a UNION
         union_locs = find_column_in_union(cte.this, column, max_expr_length)
         if union_locs:
@@ -135,13 +180,14 @@ def find_column_in_ctes(ast: exp.Expression, column: str, max_expr_length: int |
                 loc["cte_name"] = cte_name
                 locations.append(loc)
         elif hasattr(cte.this, 'selects'):
+            alias_map = build_alias_map(cte.this.selects)
             for sel in cte.this.selects:
                 if sel.alias_or_name.lower() == column.lower():
                     locations.append({
                         "location": "cte",
                         "cte_name": cte_name,
                         "expression": truncate_expr(sel.sql(), max_expr_length),
-                        "sources": extract_source_columns(sel),
+                        "sources": extract_source_columns(sel, alias_map),
                     })
     return locations
 
@@ -154,13 +200,14 @@ def build_cte_map(ast: exp.Expression) -> dict[str, exp.CTE]:
 def find_column_in_cte(cte: exp.CTE, column: str, max_expr_length: int | None = None) -> dict | None:
     """Find a specific column definition within a single CTE."""
     if hasattr(cte.this, 'selects'):
+        alias_map = build_alias_map(cte.this.selects)
         for sel in cte.this.selects:
             if sel.alias_or_name.lower() == column.lower():
                 return {
                     "cte": cte.alias,
                     "column": sel.alias_or_name,
                     "expression": truncate_expr(sel.sql(), max_expr_length),
-                    "sources": extract_source_columns(sel),
+                    "sources": extract_source_columns(sel, alias_map),
                 }
     return None
 

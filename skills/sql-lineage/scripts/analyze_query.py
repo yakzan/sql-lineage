@@ -82,14 +82,212 @@ def classify_transformation(select_expr: exp.Expression) -> str:
     return "derived"
 
 
-def extract_source_columns(expr: exp.Expression) -> list[dict]:
+def extract_aggregation_info(select_expr: exp.Expression) -> dict | None:
+    """
+    Extract aggregation semantics from an expression.
+
+    Returns a dict with aggregation details if the expression is aggregated, None otherwise.
+    """
+    # Unwrap Alias
+    expr = select_expr.this if isinstance(select_expr, exp.Alias) else select_expr
+
+    agg_funcs = {
+        exp.Sum: "SUM",
+        exp.Avg: "AVG",
+        exp.Count: "COUNT",
+        exp.Min: "MIN",
+        exp.Max: "MAX",
+    }
+
+    # Check if the expression IS an aggregation function
+    for agg_type, agg_name in agg_funcs.items():
+        if isinstance(expr, agg_type):
+            # Extract what's being aggregated
+            agg_input = []
+            for col in expr.find_all(exp.Column):
+                agg_input.append(f"{col.table or ''}.{col.name}".lstrip("."))
+            return {
+                "function": agg_name,
+                "input_columns": agg_input if agg_input else ["*"] if agg_name == "COUNT" else [],
+            }
+
+    # Check if expression CONTAINS aggregation functions (derived aggregation)
+    for agg_type, agg_name in agg_funcs.items():
+        found_aggs = list(expr.find_all(agg_type))
+        if found_aggs:
+            # Collect all aggregations in the expression
+            aggs = []
+            for agg in found_aggs:
+                agg_input = []
+                for col in agg.find_all(exp.Column):
+                    agg_input.append(f"{col.table or ''}.{col.name}".lstrip("."))
+                agg_func_name = agg_funcs.get(type(agg), "UNKNOWN")
+                aggs.append({
+                    "function": agg_func_name,
+                    "input_columns": agg_input if agg_input else ["*"] if agg_func_name == "COUNT" else [],
+                })
+            return {
+                "function": "DERIVED",
+                "contains": aggs,
+            }
+
+    return None
+
+
+def infer_data_type(select_expr: exp.Expression, schema: dict | None = None) -> str:
+    """
+    Infer the data type of an expression.
+
+    Returns a string describing the inferred type.
+    """
+    # Unwrap Alias to get the actual expression
+    expr = select_expr.this if isinstance(select_expr, exp.Alias) else select_expr
+
+    # Check for CAST - explicit type conversion
+    if isinstance(expr, exp.Cast):
+        if expr.to and hasattr(expr.to, 'this'):
+            return str(expr.to.this).upper()
+        return "UNKNOWN"
+
+    # Aggregation functions have known return types
+    if isinstance(expr, exp.Count):
+        return "BIGINT"
+    if isinstance(expr, exp.Sum):
+        return "NUMERIC"
+    if isinstance(expr, exp.Avg):
+        return "DOUBLE"
+    if isinstance(expr, (exp.Min, exp.Max)):
+        return "INHERITED"  # Same type as input
+
+    # Window functions - try to infer from the inner function
+    if isinstance(expr, exp.Window):
+        inner_func = expr.this
+        if isinstance(inner_func, exp.Count):
+            return "BIGINT"
+        if isinstance(inner_func, exp.Sum):
+            return "NUMERIC"
+        if isinstance(inner_func, exp.Avg):
+            return "DOUBLE"
+        if isinstance(inner_func, (exp.RowNumber, exp.Rank, exp.DenseRank)):
+            return "BIGINT"
+        return "INHERITED"
+
+    # Boolean expressions
+    if isinstance(expr, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE,
+                         exp.And, exp.Or, exp.Not, exp.In, exp.Between,
+                         exp.Is, exp.Like)):
+        return "BOOLEAN"
+
+    # String functions
+    if isinstance(expr, (exp.Concat, exp.Substring, exp.Upper, exp.Lower,
+                         exp.Trim, exp.Replace)):
+        return "VARCHAR"
+
+    # Date/time functions
+    if isinstance(expr, (exp.CurrentDate, exp.CurrentTimestamp)):
+        return "TIMESTAMP"
+    if isinstance(expr, exp.DateTrunc):
+        return "TIMESTAMP"
+    if isinstance(expr, exp.Extract):
+        return "INTEGER"
+    if isinstance(expr, exp.DateDiff):
+        return "INTEGER"
+
+    # Arithmetic - preserve numeric type
+    if isinstance(expr, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        return "NUMERIC"
+
+    # CASE expression - check THEN clauses for type hints
+    if isinstance(expr, exp.Case):
+        # Look at the first THEN clause for type hint
+        for when in expr.args.get("ifs", []):
+            then_expr = when.args.get("true")
+            if then_expr:
+                if isinstance(then_expr, exp.Literal):
+                    if then_expr.is_string:
+                        return "VARCHAR"
+                    if then_expr.is_number:
+                        return "NUMERIC"
+        return "CONDITIONAL"
+
+    # Simple column reference - try to get from schema
+    if isinstance(expr, exp.Column):
+        if schema:
+            table = expr.table or ""
+            col_name = expr.name
+            # Try to find in schema
+            for tbl_name, columns in schema.items():
+                if tbl_name.lower() == table.lower() or not table:
+                    if col_name in columns:
+                        return str(columns[col_name]).upper()
+        return "UNKNOWN"
+
+    # Literal values
+    if isinstance(expr, exp.Literal):
+        if expr.is_string:
+            return "VARCHAR"
+        if expr.is_number:
+            if "." in str(expr.this):
+                return "DECIMAL"
+            return "INTEGER"
+
+    # Coalesce/NVL - inherit from first non-null argument
+    # Note: NVL is usually parsed as Coalesce or a function call by sqlglot
+    if isinstance(expr, exp.Coalesce):
+        return "INHERITED"
+
+    return "UNKNOWN"
+
+
+def build_alias_map(selects: list[exp.Expression]) -> dict[str, exp.Expression]:
+    """
+    Build a map of column aliases to their expressions from a SELECT list.
+
+    This enables resolution of self-referencing columns.
+    """
+    alias_map = {}
+    for sel in selects:
+        alias_name = sel.alias_or_name.lower()
+        if isinstance(sel, exp.Alias):
+            alias_map[alias_name] = sel.this
+        else:
+            alias_map[alias_name] = sel
+    return alias_map
+
+
+def extract_source_columns(
+    expr: exp.Expression,
+    alias_map: dict[str, exp.Expression] | None = None,
+    _visited: set[str] | None = None,
+) -> list[dict]:
     """Extract all source column references from an expression."""
     sources = []
+    alias_map = alias_map or {}
+    seen = set()
+    visited = _visited if _visited is not None else set()
+
     for col in expr.find_all(exp.Column):
-        sources.append({
-            "table": col.table or "unknown",
-            "column": col.name,
-        })
+        table = col.table or "unknown"
+        col_name = col.name.lower()
+
+        # Self-referencing resolution
+        if table == "unknown" and col_name in alias_map and col_name not in visited:
+            visited.add(col_name)
+            # Recursively extract sources from the referenced alias
+            alias_sources = extract_source_columns(alias_map[col_name], alias_map, visited)
+            for src in alias_sources:
+                key = f"{src['table']}.{src['column']}"
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(src)
+        else:
+            key = f"{table}.{col.name}"
+            if key not in seen:
+                seen.add(key)
+                sources.append({
+                    "table": table,
+                    "column": col.name,
+                })
     return sources
 
 
@@ -135,16 +333,34 @@ def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None
             "columns": [col.alias_or_name for col in cte.this.selects] if hasattr(cte.this, 'selects') else [],
         })
 
+    # Extract GROUP BY early so we can attach to aggregated columns
+    group_by_cols = []
+    group = qualified.find(exp.Group)
+    if group:
+        for expr in group.expressions:
+            group_by_cols.append(expr.sql(dialect=dialect))
+
     # Analyze SELECT columns
     if hasattr(qualified, 'selects'):
+        alias_map = build_alias_map(qualified.selects)
         for i, select_expr in enumerate(qualified.selects):
             col_info = {
                 "output_position": i + 1,
                 "output_name": select_expr.alias_or_name,
                 "expression": truncate_expr(select_expr.sql(dialect=dialect), max_expr_length),
                 "transformation": classify_transformation(select_expr),
-                "sources": extract_source_columns(select_expr),
+                "data_type": infer_data_type(select_expr, schema),
+                "sources": extract_source_columns(select_expr, alias_map),
             }
+
+            # Add aggregation semantics if applicable
+            agg_info = extract_aggregation_info(select_expr)
+            if agg_info:
+                col_info["aggregation"] = agg_info
+                # Attach GROUP BY context for aggregated columns
+                if group_by_cols:
+                    col_info["grouped_by"] = group_by_cols
+
             result["columns"].append(col_info)
 
     # Extract JOINs
@@ -174,11 +390,8 @@ def analyze_select(ast: exp.Expression, dialect: str | None, schema: dict | None
     if where:
         result["filters"].append(where.this.sql(dialect=dialect))
 
-    # Extract GROUP BY
-    group = qualified.find(exp.Group)
-    if group:
-        for expr in group.expressions:
-            result["group_by"].append(expr.sql(dialect=dialect))
+    # Add GROUP BY to result (already extracted above)
+    result["group_by"] = group_by_cols
 
     # Extract ORDER BY
     order = qualified.find(exp.Order)

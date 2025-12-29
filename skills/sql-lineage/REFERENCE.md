@@ -97,7 +97,21 @@ The output is a directed graph where `edges` connect nodes (child → parent).
       "output_name": "user_name",
       "expression": "u.name AS user_name",
       "transformation": "renamed",
-      "sources": [{"table": "u", "column": "name"}]
+      "sources": [{"table": "u", "column": "name"}],
+      "data_type": "UNKNOWN"
+    },
+    {
+      "output_position": 2,
+      "output_name": "total",
+      "expression": "SUM(o.amount) AS total",
+      "transformation": "aggregated",
+      "sources": [{"table": "o", "column": "amount"}],
+      "data_type": "NUMERIC",
+      "aggregation": {
+        "function": "SUM",
+        "input_columns": ["o.amount"]
+      },
+      "grouped_by": ["u.name"]
     }
   ],
   "joins": [
@@ -114,6 +128,94 @@ The output is a directed graph where `edges` connect nodes (child → parent).
   "window_functions": []
 }
 ```
+
+### impact_analysis.py
+
+**Arguments:**
+- `sql` (positional): SQL query string or `@filepath`
+- `--source-column, -c`: Source column to analyze (required). Can be `table.column` or just `column`
+- `--dialect, -d`: SQL dialect (default: redshift)
+- `--format, -f`: Output format: `json` (default), `tree`
+- `--max-expr-length`: Maximum length for expression strings (default: unlimited)
+- `--max-sources`: Maximum number of available source columns to return (default: unlimited)
+- `--summary-only`: Omit expression fields for lightweight output (ideal for agents)
+- `--include-line-numbers`: Include line numbers where CTEs and SELECT are defined
+- Columns are qualified with sqlglot’s `qualify`, so both table aliases and base table names are accepted (e.g., `o.status` or `orders.status`).
+- UNION branches are analyzed separately; source columns remain branch-specific (e.g., `orders.status` vs `archived_orders.status`).
+
+**Output (JSON):**
+```json
+{
+  "success": true,
+  "source_column": "orders.status",
+  "impact_summary": {
+    "output_columns_affected": 2,
+    "cte_columns_affected": 5,
+    "total_affected": 7
+  },
+  "impacted_output_columns": [
+    {
+      "column": "status_flag",
+      "position": 3,
+      "expression": "CASE WHEN status > 90 THEN 'cancelled' END"
+    }
+  ],
+  "impacted_cte_columns": [
+    {
+      "cte": "order_stats",
+      "column": "cancel_count",
+      "expression": "SUM(CASE WHEN status = 91 THEN 1 END)"
+    }
+  ],
+  "available_source_columns": ["orders.id", "orders.status", "orders.amount"]
+}
+```
+
+**Output with `--include-line-numbers`:**
+```json
+{
+  "success": true,
+  "line_numbers": {
+    "cte:order_stats": 2,
+    "cte:metrics": 8,
+    "final_select": 15
+  },
+  "impacted_cte_columns": [
+    {
+      "cte": "order_stats",
+      "column": "cancel_count",
+      "line_hint": 2
+    }
+  ]
+}
+```
+
+**Output with `--summary-only`:**
+Omits the `expression` field from all columns, reducing output size significantly for large queries.
+
+**Agent Workflow Pattern:**
+For large queries with many CTEs, use the two-phase approach:
+```bash
+# Phase 1: Get lightweight impact map
+uv run impact_analysis.py @query.sql -c status --summary-only --include-line-numbers
+
+# Phase 2: Read specific CTE lines if needed (using the line_hint)
+# The agent can use Read tool with offset/limit to fetch just those lines
+```
+
+**Data Type Inference:**
+
+| Expression Type | Inferred Type |
+|----------------|---------------|
+| COUNT(*), COUNT(col) | BIGINT |
+| SUM(col) | NUMERIC |
+| AVG(col) | DOUBLE |
+| MIN/MAX(col) | INHERITED |
+| CAST(x AS TYPE) | TYPE |
+| CASE with strings | VARCHAR |
+| CASE with numbers | NUMERIC |
+| Arithmetic (+, -, *, /) | NUMERIC |
+| EXTRACT(... FROM date) | INTEGER |
 
 ## Advanced Patterns
 

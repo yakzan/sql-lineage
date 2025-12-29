@@ -24,6 +24,13 @@ column origins and transformations.
 - **Default dialect: Redshift** - No need to specify dialect for Redshift queries
 - **CTE-aware column tracing** - Finds columns in CTEs even if not in final SELECT
 - **Recursive CTE tracing** - Automatically traces through multiple CTE levels to source tables
+- **Self-referencing resolution** - Resolves columns that reference earlier aliases in the same SELECT
+- **Impact analysis** - Reverse lineage: find all columns affected by changing a source column
+- **Alias/base table matching** - Accepts both table aliases and base table names for impact queries
+- **UNION branch awareness** - Keeps per-branch lineage (e.g., `orders.status` vs `archived_orders.status`)
+- **Agent-friendly modes** - `--summary-only` and `--include-line-numbers` for lightweight output with navigation hints
+- **Data type inference** - Infers output data types (COUNT→BIGINT, SUM→NUMERIC, etc.)
+- **Aggregation semantics** - Tracks aggregation functions and GROUP BY context
 - **Expression truncation** - Use `--max-expr-length N` to limit output size for complex queries
 - **Depth limiting** - Use `--depth N` to limit recursive tracing depth
 - **CTE dependency diagrams** - Generate Mermaid flowcharts of CTE dependencies
@@ -86,6 +93,18 @@ uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
 uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/trace_column.py \
   @query.sql --column total --depth 2
 ```
+
+### Impact analysis (reverse lineage)
+```bash
+# What columns are affected if orders.status changes?
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/impact_analysis.py \
+  @query.sql --source-column orders.status --format tree
+
+# For large queries: use summary-only + line-numbers for lightweight output
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/sql-lineage/scripts/impact_analysis.py \
+  @query.sql --source-column status --summary-only --include-line-numbers
+```
+The `--summary-only` flag omits expressions (56% size reduction), while `--include-line-numbers` adds CTE line locations for targeted file reading.
 
 ### Specify SQL dialect (if not Redshift)
 ```bash
